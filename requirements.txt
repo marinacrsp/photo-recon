@@ -1,0 +1,8 @@
+# PyPI dependencies for generators.py / train_and_validate.py / sample.py
+# NOTE: PyTorch is installed separately (see SETUP.md) because its CUDA build
+# must come from the PyTorch wheel index, not PyPI.
+numpy>=1.24
+nibabel>=5.1
+matplotlib>=3.7
+opencv-python-headless>=4.8   # use opencv-python instead if you need GUI windows
+ 

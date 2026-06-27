@@ -1,0 +1,21 @@
+# Conda alternative to the venv path in SETUP.md.
+# Conda provides only the interpreter; all libraries are installed via pip so that
+# the correct CUDA build of PyTorch is pulled from the PyTorch wheel index.
+# Replace cu121 with the CUDA series matching your NVIDIA driver (cu118 / cu121 / cu124 / cu128).
+#
+#   conda env create -f environment.yml
+#   conda activate photo-imputation
+#
+name: photo-imputation
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+      - torch
+      - numpy>=1.24
+      - nibabel>=5.1
+      - matplotlib>=3.7
+      - opencv-python-headless>=4.8
