@@ -11,11 +11,7 @@ python sample.py    --model_path <path_to_model>
 import sys
 import os
 import argparse
-
-from unet.ddbm.script_util import str2bool
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + '/../')
-from datetime import datetime
-import matplotlib.pyplot as plt
 # If everything went fine, we import the rest of packages
 import torch
 from ext import (MRIread, 
@@ -30,7 +26,6 @@ import cv2
 from ext import UNet2D, logger
 import torch.nn.functional as F
 from pathlib import Path
-
 
 def pad_to_symmetric(tensor):
     """
@@ -63,60 +58,16 @@ def center_crop(tensor, original_hw):
 
     return tensor[..., start_h:start_h+orig_h, start_w:start_w+orig_w]
 
-def visualize(j, s1, s2, pred, gt, d1, d2,sample_dir):
-    s1 = s1.cpu(); s2 = s2.cpu(); pred = (pred).cpu()
-    residue = (pred.squeeze().numpy()-gt)**2
-    plt.figure(figsize=(10,5)); 
-    plt.subplot(2,3,1); 
-    plt.imshow(s1, cmap='gray'); 
-    plt.title('Input1'); 
-    plt.axis('off'); 
-    plt.subplot(2,3,2); 
-    plt.imshow(gt, cmap='gray'); 
-    plt.title('gt'); plt.axis('off'); 
-    plt.subplot(2,3,3); 
-    plt.imshow(pred, cmap='gray'); 
-    plt.axis('off'); 
-    plt.title(f'Out.\n d1: {d1}, d2: {d2}'); 
-    plt.subplot(2,3,4); 
-    plt.imshow(s2, cmap='gray'); 
-    plt.title('Input2'); plt.axis('off'); 
-    plt.tight_layout(); 
-    plt.subplot(2,3,5); 
-    plt.imshow(residue, cmap="hot"); 
-    plt.title('error'); plt.axis('off'); 
-    plt.tight_layout(); 
-    plt.savefig(f'{sample_dir}/sample_{j}.png'); 
-    plt.close()
-
 def create_argparser():
     defaults = dict(
-        data_dir="",  ## only used in bridge
-        dataset="edges2handbags",
-        dist_emb=False,
-        rel_center=False,
-        combine_dists=False,
-        condition_mode="",
-        clip_denoised=True,
-        num_samples=100,
-        batchsize=4,
-        sampler="heun",
-        split="train",
-        churn_step_ratio=0.0,
-        rho=7.0,
-        steps=40,
-        model_path="",
-        exp="",
+        model_path="/home/marina/ms_thesis/imputation_unet_2026_code/model_weights.pth",
         seed=42,
         num_workers=4,
-        eta=1.0,
-        order=1,
-        save_path="",
-        input_file="",
+        save_path="/home/marina/ms_thesis/imputation_unet_2026_code/",
+        input_file="/mnt/c/Users/marin/Desktop/master_thesis/reviewer_comments/photo_recon_uw/photo_recon_uw/00_photo_recon/18-0086/photo_recon_4mm.nii.gz",
         illumination=None,
         unsharp_sigma=1.0,
         unsharp_amount=1.0,
-        gt_file = "",
     )
     parser = argparse.ArgumentParser()
     add_dict_to_argparser(parser, defaults)
@@ -128,34 +79,33 @@ def create_argparser():
 
 def main():
     args = create_argparser().parse_args()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else torch.device('cpu')
     args.use_fp16 = False
     dtype=torch.float32
     dist_scale = 0.1
     print(args)
-    
+    torch.set_num_threads(min(int(args.num_workers), os.cpu_count()))
     workdir = args.model_path[args.model_path.find("workdir"):-3]
-    print(f'Mode of evaluation: {args.split}')
 
     sample_dir = Path(workdir)
     sample_dir.mkdir(parents=True, exist_ok=True)
-    logger.configure(dir=str(sample_dir))
 
     logger.log("creating model ...")
     model = UNet2D(4, 1, basic_module="conv", final_sigmoid=False, f_maps=128, layer_order='gcl', num_groups=8, num_levels=5, is_segmentation=False)
 
-    model.load_state_dict(torch.load(args.model_path, weights_only=False))
+    
+    ckpt = torch.load(args.model_path, weights_only=False, map_location=device)
+    model.load_state_dict(ckpt.get("model_state_dict", ckpt))
     model = model.to(device)
 
     if args.use_fp16:
         model = model.half()
     model.eval()
 
-    in_channels = 4
-
     logger.log("sampling...")
 
     with torch.no_grad():
+
        # Read in input file with reorientation
         print('Reading and resizing input images')
         I_orig, aff_orig = MRIread(args.input_file)
@@ -196,7 +146,7 @@ def main():
             minmax[c,0], minmax[c,1] = I[..., c].min(), I[..., c].max()
             I[...,c] = 2*(I[...,c] - aux2[M].min())/(auxI[M].max() - auxI[M].min()) - 1 # normalization to -1,1
 
-        # Calculate areas and detect paddingj
+        # Calculate areas and detect padding
         areas = M.sum(dim=[0, 2]).detach().cpu().numpy()
         aux = np.where(areas > 0)
         PAD = aux[0][0].astype(np.int32)

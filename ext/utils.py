@@ -17,21 +17,26 @@ import torch
 import numpy as np
 import torch.nn as nn
 
-from einops import repeat
 from argparse import Namespace
 
 import collections
 import os
 import re
 
-import yaml
-
-from unet.ddbm.script_util import str2bool
-
 
 ##################################################################################
 #                                  Loading Utils                                   #
 ##################################################################################
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "y", "1"):
+        return True
+    elif v.lower() in ("no", "false", "f", "n", "0"):
+        return False
+    else:
+        raise ValueError("Boolean value expected.")
+    
 def add_dict_to_argparser(parser, default_dict):
     for k, v in default_dict.items():
         v_type = type(v)

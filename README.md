@@ -38,7 +38,7 @@ Full instructions are in `SETUP.md`. In brief, on Linux with an NVIDIA GPU:
 ```bash
 python3.11 -m venv ~/envs/photo-imputation && source ~/envs/photo-imputation/bin/activate
 pip install --upgrade pip
-pip install torch --index-url https://download.pytorch.org/whl/cu121   # match cuXXX to your driver
+pip install torch --index-url https://download.pytorch.org/whl/cu121   
 pip install -r requirements.txt
 ```
 
@@ -46,17 +46,12 @@ The PyPI dependencies are `torch`, `numpy`, `nibabel`, `matplotlib`, and `opencv
 A compatible NVIDIA driver is required; a system CUDA toolkit is not, since the PyTorch
 wheels bundle their own runtime. `ext`, `unet`, and `generators` come from this repository.
 
-## Training Data
-Training data was recovered from the following 10 publicly available datasets: ABIDE [28], ADHD200
-[29], ADNI [30], AIBL [31], COBRE [32], Chinese-HCP [33], HCP [34], ISBI2015 [35],
-MCIC [36], and OASIS3 [37]
-
 ## Usage
 
 ### Training
-
+`train.py` script contains the skeleton of the training scripts used to run the training and validation of the imputation model. 
 Configuration is set at the top of `train.py` (data directory, output directory,
-device, U-Net width, spacing limits, epochs). Edit the `# TODO` lines, then run:
+device, U-Net width, spacing limits, epochs). 
 
 ```bash
 python scripts/train.py
@@ -66,23 +61,56 @@ Checkpoints are written to `output_directory`. Validation uses a fixed synthetic
 materialized once before training and reused every epoch, with the inter-slice spacing fixed at
 the midpoint of `spacing_limits` (`mid_loc=True`). 
 
+#### Training Data
+Training data was recovered from the following 10 publicly available datasets: ABIDE [28], ADHD200
+[29], ADNI [30], AIBL [31], COBRE [32], Chinese-HCP [33], HCP [34], ISBI2015 [35],
+MCIC [36], and OASIS3 [37]
+
 ### Inference
-
-```bash
-python scripts/sample.py \
-    --model_path /path/to/model_weights.pth \
-    --input_file /path/to/photo_reconstruction.mgz \
-    --illumination <value> \
-    --unsharp_sigma 1.0 \
-    --unsharp_amount 1.0
-```
-
-`sample.py` reorients the input to a canonical frame, resamples in-plane to 1 mm, normalizes,
-and for each output coronal slice imputes from the two nearest acquired slices, adds the linear
-interpolation baseline, denormalizes, applies unsharp masking, and writes
-`photo_recon.imputation.mgz`. On a headless server set `export MPLBACKEND=Agg` first.
+`sample.py` performs through-plane slice imputation on a 3D brain volume reconstructed from coronal dissection photographs. Given a reconstruction sampled at a coarse slice spacing (the photographed slab thickness), it synthesizes intermediate coronal slices with a pretrained 2D U-Net and writes a denser, near-isotropic volume. The network predicts a residual correction on top of a linear interpolation between the two neighboring acquired slices, conditioned on their relative distances.
 
 Download `model_weights.pth` from: https://ftp.nmr.mgh.harvard.edu/pub/dist/lcnpublic/dist/dissection_photo_model/photo_imputation_unet.pth
+
+#### Input
+
+A 3D volume in NIfTI (`.nii.gz`) or FreeSurfer (`.mgz`) format, produced by the FreeSurfer PhotoTools reconstruction (for example `photo_recon_4mm.nii.gz`). The volume may be grayscale or RGB. After canonical reorientation, the through-plane (coronal) axis is assumed to be axis 1. Anterior and posterior padding is expected to be approximately symmetric; the script raises an exception if uneven padding is detected.
+
+#### Basic command
+
+```bash
+python sample.py \
+  --model_path /path/to/model_weights.pth \
+  --input_file /path/to/photo_recon_4mm.nii.gz
+```
+
+#### Arguments
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `--model_path` | str | see source | Path to the pretrained U-Net checkpoint (`.pth`). |
+| `--input_file` | str | see source | Path to the input reconstruction (`.nii.gz` or `.mgz`). |
+| `--seed` | int | 42 | Random seed. Currently unused. |
+| `--num_workers` | int | 4 | Worker count. Currently unused. |
+| `--save_path` | str | see source | Reserved for an output directory. Currently unused; see Output. |
+| `--illumination` | float | None | Reserved for illumination handling. Currently unused. |
+| `--unsharp_sigma` | float | 1.0 | Intended Gaussian sigma for unsharp masking. Currently not applied; see Known limitations. |
+| `--unsharp_amount` | float | 1.0 | Intended unsharp amount. Currently not applied; see Known limitations. |
+
+#### Output
+
+The reconstructed, slice-imputed volume is written to `./photo_recon.imputation.mgz` in the current working directory. The output preserves the corrected affine, rescaled to the denser through-plane spacing, and is stored as `uint8`.
+
+#### Example
+
+```bash
+# Device (GPU or CPU) is selected automatically
+python sample.py \
+  --model_path ./workdir/model_weights.pth \
+  --input_file ./data/18-0086/photo_recon_4mm.nii.gz
+```
+
+This reads the 4 mm reconstruction, resamples it in plane to 1 mm per pixel, synthesizes intermediate coronal slices to reach approximately 1 mm slice spacing, applies unsharp masking, and writes `photo_recon.imputation.mgz`.
+
 
 ## References
 
@@ -133,3 +161,5 @@ This repository contains the slice-imputation method proposed in the manuscript 
   J. Hassenstab, K. Moulder, A. G. Vlassenko, et al., "OASIS-3: longitudinal neuroimaging,
   clinical, and cognitive dataset for normal aging and Alzheimer disease," *medRxiv*,
   pp. 2019-12, 2019.
+
+

@@ -5,4 +5,4 @@ numpy>=1.24
 nibabel>=5.1
 matplotlib>=3.7
 opencv-python-headless>=4.8   # use opencv-python instead if you need GUI windows
- 
+h5py
