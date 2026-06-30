@@ -1,5 +1,5 @@
 # Improving Neuropathological Reconstruction Fidelity via AI Slice Imputation
-
+<img src="imgs/github_figure.png" alt="Super-Resolution framework" width="" height="">
 A 2D U-Net that imputes intermediate coronal slices to turn anisotropic 3D reconstructions
 of dissection photographs into anatomically consistent, near-isotropic volumes. The network
 is trained entirely on domain-randomized synthetic data generated on the fly from 1 mm
@@ -19,20 +19,19 @@ suitable for downstream atlas registration, segmentation, and volumetry.
 
 ## Repository layout
 
-The scripts add their parent directory to `sys.path`, so the modules below must sit one level
-above the scripts.
-
 ```
 project_root/
 ├── ext/                      # project utilities
 ├── generators.py             # synthetic triplet generator (hemi_generator)
 └── scripts/
     ├── train.py              # training and validation loops
-    └── sample.py             # inference on a real stack of dissection photographs
+    ├── sample.py             # inference on a real stack of dissection photographs
+    ├── run_imputation.sh     # wrapper: runs sample.py for one subject
+    └── run_downstream.sh     # wrapper: surface reconstruction, segmentation + Dice, atlas registration + Dice
 ```
 
 ## Installation
-
+### Environment 
 Full instructions are in `SETUP.md`. In brief, on Linux with an NVIDIA GPU:
 
 ```bash
@@ -45,6 +44,38 @@ pip install -r requirements.txt
 The PyPI dependencies are `torch`, `numpy`, `nibabel`, `matplotlib`, and `opencv-python`.
 A compatible NVIDIA driver is required; a system CUDA toolkit is not, since the PyTorch
 wheels bundle their own runtime. `ext`, `unet`, and `generators` come from this repository.
+
+### Additional software
+ 
+The imputation step (`sample.py` / `run_imputation.sh`) needs only the Python environment
+above. The downstream evaluation (`run_downstream.sh`) additionally requires the following
+neuroimaging packages, each installed separately and exposed on `PATH`:
+ 
+- **FreeSurfer** provides `mri_synthseg` (volume segmentation) and `mri_compute_overlap`
+  (Dice and Jaccard overlap). Download and installation:
+  https://surfer.nmr.mgh.harvard.edu/fswiki/DownloadAndInstall
+- **recon-all-clinical** (cortical surface reconstruction for scans of arbitrary contrast and
+  resolution) is documented at https://surfer.nmr.mgh.harvard.edu/fswiki/recon-all-clinical.
+  The script invokes a project wrapper named `run_recon-any` (a "Recon-Any" / recon-all-clinical
+  build); install it separately and confirm `run_recon-any` is callable.
+- **NiftyReg** provides `reg_aladin` (affine) and `reg_f3d` (non-rigid) registration. Source and
+  build instructions: https://github.com/KCL-BMEIS/niftyreg
+
+After installation, set up the environment, for example:
+ 
+```bash
+export FREESURFER_HOME=/path/to/freesurfer
+source "$FREESURFER_HOME/SetUpFreeSurfer.sh"
+ 
+# Expose the NiftyReg binaries (reg_aladin, reg_f3d)
+export PATH="/path/to/niftyreg/bin:$PATH"
+```
+ 
+Verify the binaries resolve before running the pipeline:
+ 
+```bash
+command -v mri_synthseg mri_compute_overlap run_recon-any reg_aladin reg_f3d
+```
 
 ## Usage
 
@@ -80,86 +111,31 @@ A 3D volume in NIfTI (`.nii.gz`) or FreeSurfer (`.mgz`) format, produced by the 
 ```bash
 python sample.py \
   --model_path /path/to/model_weights.pth \
-  --input_file /path/to/photo_recon_4mm.nii.gz
+  --input_file /path/to/photo_recon_<thickness>mm.nii.gz \
+  --save_path  /path/to/imputation_<thickness>mm.mgz
 ```
 
 #### Arguments
-
+ 
 | Argument | Type | Default | Description |
 |---|---|---|---|
 | `--model_path` | str | see source | Path to the pretrained U-Net checkpoint (`.pth`). |
 | `--input_file` | str | see source | Path to the input reconstruction (`.nii.gz` or `.mgz`). |
+| `--save_path` | str | see source | Output file path for the imputed volume (`.mgz` or `.nii.gz`). |
 | `--seed` | int | 42 | Random seed. Currently unused. |
-| `--num_workers` | int | 4 | Worker count. Currently unused. |
-| `--save_path` | str | see source | Reserved for an output directory. Currently unused; see Output. |
+| `--num_workers` | int | 4 | Number of CPU threads (passed to `torch.set_num_threads`). |
 | `--illumination` | float | None | Reserved for illumination handling. Currently unused. |
-| `--unsharp_sigma` | float | 1.0 | Intended Gaussian sigma for unsharp masking. Currently not applied; see Known limitations. |
-| `--unsharp_amount` | float | 1.0 | Intended unsharp amount. Currently not applied; see Known limitations. |
+| `--unsharp_sigma` | float | 1.0 | Intended Gaussian sigma for unsharp masking. Currently ignored; a fixed value of 1 is applied (see [Known limitations](#known-limitations)). |
+| `--unsharp_amount` | float | 1.0 | Intended unsharp amount. Currently ignored; a fixed value of 1 is applied (see [Known limitations](#known-limitations)). |
 
 #### Output
 
 The reconstructed, slice-imputed volume is written to `./photo_recon.imputation.mgz` in the current working directory. The output preserves the corrected affine, rescaled to the denser through-plane spacing, and is stored as `uint8`.
-
-#### Example
-
-```bash
-# Device (GPU or CPU) is selected automatically
-python sample.py \
-  --model_path ./workdir/model_weights.pth \
-  --input_file ./data/18-0086/photo_recon_4mm.nii.gz
-```
-
 This reads the 4 mm reconstruction, resamples it in plane to 1 mm per pixel, synthesizes intermediate coronal slices to reach approximately 1 mm slice spacing, applies unsharp masking, and writes `photo_recon.imputation.mgz`.
 
 
-## References
+## Reference
 
-This repository contains the slice-imputation method proposed in the manuscript below. The bracketed numbers match the numbering of that manuscript's bibliography.
+The scripts in this repository were used to produce the results reported in the associated manuscript. If you use any of these tools, please cite the following:
 
-**Manuscript**
-
-- M. Crespo Aguirre, J. Williams-Ramirez, D. Zemlyanker, X. Hu, L. J. Deden-Binder, R. Herisse,
-  M. Montine, T. R. Connors, C. Mount, C. L. MacDonald, C. D. Keene, C. S. Latimer, D. H. Oakley,
-  B. T. Hyman, A. Lawry Aguila, and J. E. Iglesias, "Improving Neuropathological Reconstruction
-  Fidelity via AI Slice Imputation," arXiv:2602.00669, 2026. 
-
-**Training datasets**
-
-- [28] A. Di Martino, C.-G. Yan, Q. Li, E. Denio, F. X. Castellanos, K. Alaerts, J. S. Anderson,
-  M. Assaf, S. Y. Bookheimer, M. Dapretto, et al., "The autism brain imaging data exchange:
-  towards a large-scale evaluation of the intrinsic brain architecture in autism," *Molecular
-  Psychiatry*, vol. 19, no. 6, pp. 659-667, 2014.
-- [29] M. R. Brown, G. S. Sidhu, R. Greiner, N. Asgarian, M. Bastani, P. H. Silverstone,
-  A. J. Greenshaw, and S. M. Dursun, "ADHD-200 global competition: diagnosing ADHD using personal
-  characteristic data can outperform resting state fMRI measurements," *Frontiers in Systems
-  Neuroscience*, vol. 6, p. 69, 2012.
-- [30] C. R. Jack Jr, M. A. Bernstein, N. C. Fox, P. Thompson, G. Alexander, D. Harvey,
-  B. Borowski, P. J. Britson, J. L. Whitwell, C. Ward, et al., "The Alzheimer's Disease
-  Neuroimaging Initiative (ADNI): MRI methods," *Journal of Magnetic Resonance Imaging*, vol. 27,
-  no. 4, pp. 685-691, 2008.
-- [31] C. Fowler, S. R. Rainey-Smith, S. Bird, J. Bomke, P. Bourgeat, B. M. Brown, S. C. Burnham,
-  A. I. Bush, C. Chadunow, S. Collins, et al., "Fifteen years of the Australian Imaging,
-  Biomarkers and Lifestyle (AIBL) study: progress and observations from 2,359 older adults
-  spanning the spectrum from cognitive normality to Alzheimer's disease," *Journal of Alzheimer's
-  Disease Reports*, vol. 5, no. 1, pp. 443-468, 2021.
-- [32] A. R. Mayer, D. Ruhl, F. Merideth, J. Ling, F. M. Hanlon, J. Bustillo, and J. Canive,
-  "Functional imaging of the hemodynamic sensory gating response in schizophrenia," *Human Brain
-  Mapping*, vol. 34, no. 9, pp. 2302-2312, 2013.
-- [33] N. Vogt, "The Chinese Human Connectome Project," *Nature Methods*, vol. 20, no. 2, p. 177,
-  2023.
-- [34] D. C. Van Essen, K. Ugurbil, E. Auerbach, D. Barch, T. E. Behrens, R. Bucholz, A. Chang,
-  L. Chen, M. Corbetta, S. W. Curtiss, et al., "The Human Connectome Project: a data acquisition
-  perspective," *NeuroImage*, vol. 62, no. 4, pp. 2222-2231, 2012.
-- [35] A. Carass, S. Roy, A. Jog, J. L. Cuzzocreo, E. Magrath, A. Gherman, J. Button, J. Nguyen,
-  F. Prados, C. H. Sudre, et al., "Longitudinal multiple sclerosis lesion segmentation: resource
-  and challenge," *NeuroImage*, vol. 148, pp. 77-102, 2017.
-- [36] R. L. Gollub, J. M. Shoemaker, M. D. King, T. White, S. Ehrlich, S. R. Sponheim,
-  V. P. Clark, J. A. Turner, B. A. Mueller, V. Magnotta, et al., "The MCIC collection: a shared
-  repository of multi-modal, multi-site brain image data from a clinical investigation of
-  schizophrenia," *Neuroinformatics*, vol. 11, no. 3, pp. 367-388, 2013.
-- [37] P. J. LaMontagne, T. L. Benzinger, J. C. Morris, S. Keefe, R. Hornbeck, C. Xiong, E. Grant,
-  J. Hassenstab, K. Moulder, A. G. Vlassenko, et al., "OASIS-3: longitudinal neuroimaging,
-  clinical, and cognitive dataset for normal aging and Alzheimer disease," *medRxiv*,
-  pp. 2019-12, 2019.
-
-
+- M. Crespo Aguirre, J. Williams-Ramirez, D. Zemlyanker, X. Hu, L. J. Deden-Binder, R. Herisse, M. Montine, T. R. Connors, C. Mount, C. L. MacDonald, C. D. Keene, C. S. Latimer, D. H. Oakley, B. T. Hyman, A. Lawry Aguila, and J. E. Iglesias, "Improving Neuropathological Reconstruction Fidelity via AI Slice Imputation," arXiv:2602.00669, 2026.

@@ -63,7 +63,7 @@ def create_argparser():
         model_path="/home/marina/ms_thesis/imputation_unet_2026_code/model_weights.pth",
         seed=42,
         num_workers=4,
-        save_path="/home/marina/ms_thesis/imputation_unet_2026_code/",
+        save_path="/home/marina/ms_thesis/imputation_unet_2026_code/file.mgz",
         input_file="/mnt/c/Users/marin/Desktop/master_thesis/reviewer_comments/photo_recon_uw/photo_recon_uw/00_photo_recon/18-0086/photo_recon_4mm.nii.gz",
         illumination=None,
         unsharp_sigma=1.0,
@@ -93,7 +93,6 @@ def main():
     logger.log("creating model ...")
     model = UNet2D(4, 1, basic_module="conv", final_sigmoid=False, f_maps=128, layer_order='gcl', num_groups=8, num_levels=5, is_segmentation=False)
 
-    
     ckpt = torch.load(args.model_path, weights_only=False, map_location=device)
     model.load_state_dict(ckpt.get("model_state_dict", ckpt))
     model = model.to(device)
@@ -142,16 +141,12 @@ def main():
             medians[c] = torch.median(auxI[M])
             I[:, :, :, c] /= medians[c]
 
-            aux2 = I[...,c] # post normalization by medians
-            minmax[c,0], minmax[c,1] = I[..., c].min(), I[..., c].max()
-            I[...,c] = 2*(I[...,c] - aux2[M].min())/(auxI[M].max() - auxI[M].min()) - 1 # normalization to -1,1
-
         # Calculate areas and detect padding
         areas = M.sum(dim=[0, 2]).detach().cpu().numpy()
         aux = np.where(areas > 0)
         PAD = aux[0][0].astype(np.int32)
-        if (aux[0][-1] != (I.shape[1] - 4)):
-            raise Exception('Uneven padding detected in anterior and posterior directions')
+        # if (aux[0][-1] != (I.shape[1] - 4)):
+        #     raise Exception('Uneven padding detected in anterior and posterior directions')
 
         thicknesses = av_thickness * np.ones(M.shape[1] - 2 * PAD + 1)
 
@@ -201,10 +196,10 @@ def main():
     
     # DENORMALIZE
     for c in range(I2.shape[-1]):
-        I2[...,c] = (I2[...,c] + 1)*0.5*(minmax[c,1] - minmax[c,0]) + minmax[c,0] # from -1, 1 -> 0, 1
+        # I2[...,c] = (I2[...,c] + 1)*0.5*(minmax[c,1] - minmax[c,0]) + minmax[c,0] # from -1, 1 -> 0, 1
         I2[...,c] *= medians[c] # from 0, 1 -> 0, 255
 
-    # SHARPEN
+    # # SHARPEN
     unsharp_amount, unsharp_sigma = 1, 1
     blurred = torch.zeros_like(I2) 
     for c in range(I2.shape[3]):
@@ -212,9 +207,9 @@ def main():
     I2 += unsharp_amount * (I2 - blurred) # cause in-plane slices look sharper than off-plane slices
 
     I2 = (I2.clip(0, 255).squeeze()).detach().cpu().numpy().astype(np.uint8)
-    output_file_nn = f'./photo_recon.imputation.mgz'
+    output_file_nn = f'{args.save_path}'
     MRIwrite(I2, aff2, output_file_nn)
-
+    logger.log(f"Written file as: {output_file_nn}")
 if __name__ == "__main__":
     main()
 

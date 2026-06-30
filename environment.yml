@@ -19,3 +19,4 @@ dependencies:
       - nibabel>=5.1
       - matplotlib>=3.7
       - opencv-python-headless>=4.8
+      - h5pyclaude

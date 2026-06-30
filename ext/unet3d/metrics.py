@@ -5,11 +5,14 @@ import torch
 from skimage import measure
 from skimage.metrics import adapted_rand_error, peak_signal_noise_ratio, mean_squared_error
 
-from pytorch3dunet.unet3d.losses import compute_per_channel_dice
-from pytorch3dunet.unet3d.seg_metrics import AveragePrecision, Accuracy
-from pytorch3dunet.unet3d.utils import get_logger, expand_as_one_hot, convert_to_numpy
-
-logger = get_logger('EvalMetric')
+def convert_to_numpy(t):
+    # t: [-1,1]
+    out = (t + 1) * 127.5
+    out = out.clamp(0, 255)
+    out = out.to(torch.uint8)
+    out = out.permute(0, 2, 3, 1) # batch, 256, 256, 3
+    out = out.contiguous()
+    return out.cpu().numpy() # [0, 255]
 
 
 class DiceCoefficient:
@@ -410,7 +413,7 @@ class PSNR:
         pass
 
     def __call__(self, input, target):
-        input, target = convert_to_numpy(input, target)
+        # input, target = convert_to_numpy(input, target)
         return peak_signal_noise_ratio(target, input)
 
 
@@ -423,7 +426,7 @@ class MSE:
         pass
 
     def __call__(self, input, target):
-        input, target = convert_to_numpy(input, target)
+        # input, target = convert_to_numpy(input, target)
         return mean_squared_error(input, target)
 
 
