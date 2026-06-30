@@ -1,5 +1,5 @@
 # Improving Neuropathological Reconstruction Fidelity via AI Slice Imputation
-<img src="imgs/github_figure.png" alt="Super-Resolution framework" width="" height="">
+<img src="imgs/framework_git.png" alt="Super-Resolution framework" width="" height="">
 A 2D U-Net that imputes intermediate coronal slices to turn anisotropic 3D reconstructions
 of dissection photographs into anatomically consistent, near-isotropic volumes. The network
 is trained entirely on domain-randomized synthetic data generated on the fly from 1 mm
@@ -61,22 +61,6 @@ neuroimaging packages, each installed separately and exposed on `PATH`:
 - **NiftyReg** provides `reg_aladin` (affine) and `reg_f3d` (non-rigid) registration. Source and
   build instructions: https://github.com/KCL-BMEIS/niftyreg
 
-After installation, set up the environment, for example:
- 
-```bash
-export FREESURFER_HOME=/path/to/freesurfer
-source "$FREESURFER_HOME/SetUpFreeSurfer.sh"
- 
-# Expose the NiftyReg binaries (reg_aladin, reg_f3d)
-export PATH="/path/to/niftyreg/bin:$PATH"
-```
- 
-Verify the binaries resolve before running the pipeline:
- 
-```bash
-command -v mri_synthseg mri_compute_overlap run_recon-any reg_aladin reg_f3d
-```
-
 ## Usage
 
 ### Training
@@ -133,6 +117,93 @@ python sample.py \
 The reconstructed, slice-imputed volume is written to `./photo_recon.imputation.mgz` in the current working directory. The output preserves the corrected affine, rescaled to the denser through-plane spacing, and is stored as `uint8`.
 This reads the 4 mm reconstruction, resamples it in plane to 1 mm per pixel, synthesizes intermediate coronal slices to reach approximately 1 mm slice spacing, applies unsharp masking, and writes `photo_recon.imputation.mgz`.
 
+#### Wrapper script
+ 
+For repeated or batched runs, `run_imputation.sh` wraps the single-volume command. Set
+`subjectid` and `thickness` at the top, then run it from the `scripts/` directory (it invokes
+`sample.py` by relative path):
+ 
+```bash
+cd scripts
+bash run_imputation.sh
+```
+
+The example paths in the script are placeholders; edit them to your data layout. The output
+file (for example `imputation_4mm.mgz`) is what you pass as the reconstruction to the downstream
+evaluation below.
+
+### Downstream analyses
+ 
+`run_downstream.sh` runs three downstream evaluations on a photo-reconstructed volume: cortical
+surface reconstruction, volume segmentation, and
+atlas registration. Edit the variables at the top of the script (`subjectid`, `thickness`,
+`atlas`, and the input and output paths), ensure the external binaries are on `PATH`, then run:
+ 
+```bash
+bash scripts/run_downstream.sh
+```
+
+Outputs are written under `downstream_tasks/` in numbered subdirectories.
+ 
+#### 1. Surface reconstruction
+ 
+Cortical surfaces are reconstructed from the resampled reconstruction with the
+recon-all-clinical-based wrapper `run_recon-any`:
+ 
+```bash
+run_recon-any -i "$photo_recon_resample" -subjid "$subjectid" -side both \
+              -sdir "$output_dir/01_photo_recon_recon-all/" -threads 1
+```
+ 
+#### 2. Volume segmentation and Dice overlap
+ 
+The reconstruction is segmented with SynthSeg in photo mode:
+ 
+```bash
+mkdir -p "$output_dir/02_photo_recon_synthseg"
+mri_synthseg --i "$photo_recon" \
+             --o "$output_dir/02_photo_recon_synthseg/${subjectid}_${thickness}.mgz" \
+             --cpu --photo both
+```
+ 
+The segmentation is then compared against the corresponding MRI SynthSeg segmentation, which
+must be computed separately and placed at `gt_segmentation`. The two segmentations must share a
+common space (same dimensions and `vox2ras`); resample one onto the other first if they do not.
+ 
+```bash
+mkdir -p "$output_dir/02_photo_recon_synthseg/dice_scores"
+mri_compute_overlap "$example_segmentation" "$gt_segmentation" -a -l "$dir_dice_scores"
+```
+ 
+Two points on this step:
+ 
+- The `dice_scores/` directory must exist before the call. `mri_compute_overlap` does not create
+  it, and a missing parent directory causes the `-l` write to fail without producing a file. The
+  `mkdir -p` line above prevents this.
+- `mri_compute_overlap` with `-a` aggregates all labels and writes a plain-text report; the file
+  extension does not change its contents. For a structured, per-label report in JSON, use the
+  newer `mri_seg_overlap` instead, for example
+  `mri_seg_overlap "$example_segmentation" "$gt_segmentation" --measures dice jaccard --out scores.json`.
+#### 3. Atlas registration
+ 
+An MNI ICBM152 atlas (floating) is registered to the photo reconstruction (reference) with
+NiftyReg, first affine then non-rigid.
+ 
+```bash
+# 3.1 Affine
+reg_aladin \
+    -ref "$photo_recon_resample" \
+    -flo "$atlas" \
+    -aff "$reg_dir/derivatives/atlas2_${thickness}mm_affine.txt" \
+    -res "$reg_dir/mni_${thickness}mm_affine.nii.gz"
+ 
+# 3.2 Non-rigid (initialized with the affine-aligned atlas)
+reg_f3d \
+    -ref "$photo_recon_resample" \
+    -flo "$atlas_aligned" \
+    -cpp "$reg_dir/derivatives/atlas2_${thickness}mm_nonrigid.nii.gz" \
+    -res "$reg_dir/mni_${thickness}mm_nonrigid.nii.gz"
+```
 
 ## Reference
 
