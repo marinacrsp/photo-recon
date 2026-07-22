@@ -45,11 +45,12 @@ from scipy.stats import wilcoxon
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-ROOT      = "/home/marina/ms_thesis"
-UW_DIR    = os.path.join(ROOT, "photo_recon_uw")
-MADRC_DIR = os.path.join(ROOT, "photo_recon_madrc")
-OUT_DIR   = os.path.join(ROOT, "evaluation_results", "task_1_surface_reconstruction")
-CACHE     = os.path.join(OUT_DIR, "task1_surface_errors_long.csv")
+# These are initialized from the command line.
+UW_DIR = None
+MADRC_DIR = None
+OUT_DIR = None
+CACHE = None
+OVERLEAF_REPO = None
 
 # Gold-standard (deformed MRI) location.
 GT = {"uw_parent": "12_recon_any_original_mri_deformed", "uw_subdir": "mri",
@@ -69,14 +70,14 @@ METHODS = {
         "uw_subdir":    "imputed_unet_resampled_{d}",
         "madrc_subdir": "photo_recon.machine_learning",
     },
-    # "Tricubic": {
-    #     "uw_parent":    "13_recon_any_imputations_tricubic",
-    #     "uw_subdir":    "imputed_tricubic_resampled_{d}",
-    #     "madrc_subdir": "photo_recon.tricubic",
-    # },
+    "Tricubic": {
+        "uw_parent":    "13_recon_any_bicubic",
+        "uw_subdir":    "photo_recon_{d}_tricubic_gray",
+        # "madrc_subdir": "photo_recon.tricubic",
+    },
 }
 
-METHOD_ORDER = ["Photo-recon", "Imputed"]      # add "Tricubic" here later
+METHOD_ORDER = ["Photo-recon", "Imputed", "Tricubic"]      # add "Tricubic" here later
 REFERENCE    = "Photo-recon"                    # baseline for the p-value row
 COMPARISON   = "Imputed"                        # method tested against REFERENCE
 
@@ -180,6 +181,7 @@ def compute_uw(records: list) -> None:
         for d in DISTANCES:
             cond = f"UW-{d}"
             for method, spec in METHODS.items():
+
                 sub = spec["uw_subdir"].format(d=d)
                 try:
                     for h in ("lh", "rh"):
@@ -221,7 +223,7 @@ def compute_madrc(records: list) -> None:
 def compute_and_cache() -> pd.DataFrame:
     records: list = []
     compute_uw(records)
-    compute_madrc(records)
+    # compute_madrc(records)
     df = pd.DataFrame.from_records(records)
     if df.empty:
         raise RuntimeError("No surface records computed. Check ROOT / paths.")
@@ -236,7 +238,6 @@ def load_long(recompute: bool = False) -> pd.DataFrame:
         print(f"Loading cached surface errors from {CACHE}")
         return pd.read_csv(CACHE)
     return compute_and_cache()
-
 
 # =============================================================================
 # STAGE 2 - AGGREGATION, TABLE, FIGURE
@@ -391,20 +392,69 @@ def push_to_overleaf(files: list, repo=None,
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Build Task 1 surface-error table + figure.")
-    ap.add_argument("--recompute", action="store_true",
-                    help="force the surface computation instead of using the cache")
-    ap.add_argument("--push", action="store_true",
-                    help="copy outputs into OVERLEAF_REPO, git commit and push")
-    args = ap.parse_args()
+
+    parser = argparse.ArgumentParser(
+        description="Build Task 1 surface-error table + figure."
+    )
+
+    parser.add_argument(
+        "--uw-dir",
+        type=str,
+        required=True,
+        help="Path to the UW dataset."
+    )
+
+    parser.add_argument(
+        "--madrc-dir",
+        type=str,
+        required=True,
+        help="Path to the MADRC dataset."
+    )
+
+    parser.add_argument(
+        "--out-dir",
+        type=str,
+        required=True,
+        help="Directory where outputs will be written."
+    )
+
+    parser.add_argument(
+        "--overleaf-repo",
+        type=str,
+        default=None,
+        help="Optional local Overleaf repository."
+    )
+
+    parser.add_argument(
+        "--recompute",
+        action="store_true",
+        help="Force recomputation instead of using the cached CSV."
+    )
+
+    parser.add_argument(
+        "--push",
+        action="store_true",
+        help="Copy outputs to Overleaf and git push."
+    )
+
+    args = parser.parse_args()
+
+    global UW_DIR, MADRC_DIR, OUT_DIR, CACHE, OVERLEAF_REPO
+    UW_DIR = args.uw_dir
+    MADRC_DIR = args.madrc_dir
+    OUT_DIR = args.out_dir
+    CACHE = os.path.join(OUT_DIR, "task1_surface_errors_long.csv")
+    OVERLEAF_REPO = args.overleaf_repo
 
     pc = per_case_means(load_long(recompute=args.recompute))
     outputs = save_outputs(pc)
+
     print("Wrote:")
     for f in outputs:
-        print("  ", f)
+        print(f"  {f}")
+
     if args.push:
-        push_to_overleaf(outputs)
+        push_to_overleaf(outputs, repo=OVERLEAF_REPO)
 
 
 if __name__ == "__main__":

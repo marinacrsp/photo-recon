@@ -8,7 +8,7 @@ regenerates in one run:
 
     * task2_combined_boxplot.svg / .pdf   (single figure, all conditions)
     * task2_scores.tex                     (Overleaf-ready Dice table)
-    * task3_pairwise.tex                   (Overleaf-ready pairwise p-value table)
+    * task2_pairwise.tex                   (Overleaf-ready pairwise p-value table)
     * task2_scores_audit.csv               (means + p-values, machine readable)
 
 Significance in the Dice table is a Wilcoxon signed-rank test of each method
@@ -42,16 +42,22 @@ from scipy.stats import wilcoxon
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-UW_DIR = None
-MADRC_DIR = None
-OUT_DIR = None
-OVERLEAF_REPO = None
+UW_DIR    = "/home/marina/ms_thesis/photo_recon_uw"
+MADRC_DIR = "/home/marina/ms_thesis/photo_recon_madrc"
+OUT_DIR   = "/home/marina/ms_thesis/evaluation_results/task_2_synthseg_segmentation"
 
-# Methods plotted per condition.
+# Methods plotted per condition. Default includes Tricubic (your explicit request).
+# To reproduce image 2 exactly (Photo-recon + Imputed only) use:
+# METHODS = ["Photo-recon", "Imputed"]
 METHODS = ["Photo-recon", "Tricubic", "Imputed"]
 
+# The reference table reports MADRC Tricubic as "--". Keep False to reproduce it.
+# Setting True computes it, but case IDs under 04_bicubic_synthseg may not align
+# with the best_recon_* cases, so the paired p-values can be undefined.
 INCLUDE_TRICUBIC_MADRC = True
 
+# Which method(s) get significance stars ON THE FIGURE (table always reports both).
+# Image-2 style annotates only Imputed vs Photo-recon.
 ANNOTATE_METHODS_IN_FIGURE = ["Imputed"]
 
 # Local clone of the Overleaf Git remote (see notes at bottom of this file).
@@ -135,12 +141,12 @@ def _emit(records: list, case: str, method: str, condition: str,
 def load_uw(records: list) -> None:
     """UW cohort: three parallel subfolders sharing case-folder names."""
     sub_method = {
-        "05_photo_recon_atlas_registration": "Photo-recon",
-        "05_bicubic_atlas_registration_resamplingfirst": "Tricubic",
-        "05_unet_atlas_registration": "Imputed",
+        "04_photo_recon_synthseg": "Photo-recon",
+        "04_bicubic_synthseg_rerun": "Tricubic",
+        "04_unet_synthseg": "Imputed",
     }
 
-    ref_sub = "05_photo_recon_atlas_registration"
+    ref_sub = "04_photo_recon_synthseg"
     ref_path = os.path.join(UW_DIR, ref_sub)
     if not os.path.isdir(ref_path):
         print(f"[UW] missing {ref_path}, skipping UW cohort")
@@ -151,9 +157,11 @@ def load_uw(records: list) -> None:
             for sub, method in sub_method.items():
                 if method not in METHODS:
                     continue
-                elif method == 'Photo-recon' or method == 'Imputed':
-                    hits = glob.glob(os.path.join(UW_DIR, sub, case, f"synthseg_nonlinear*{d}.json"))
-
+                elif method == 'Photo-recon':
+                    hits = glob.glob(os.path.join(UW_DIR, sub, case, f"synthseg_photo_recon*{d}.json"))
+                elif method == 'Imputed':
+                    hits = glob.glob(os.path.join(UW_DIR, sub, case, f"synthseg_imputed_unet*{d}.json"))
+                    # hits = glob.glob(os.path.join(UW_DIR, sub, case, f"dice_scores*{d}.json"))
                 else:
                     hits = glob.glob(os.path.join(UW_DIR, sub, case, f"dice_*{d}.json"))
                 if not hits or not os.path.exists(hits[0]):
@@ -164,18 +172,19 @@ def load_uw(records: list) -> None:
 def load_madrc(records: list) -> None:
     """MADRC cohort: PR/Imputed from overlap txt, Tricubic from dice_*.json."""
     patterns = {
-        "Photo-recon": "best_recon_atlas_registrations/*/defsynthseg_to_photo_recon_orig.json",
-        "Imputed":     "best_recon_atlas_registrations/*/defsynthseg_to_photo_recon_machine_learning.json",
+        "Photo-recon": "best_recon_ss_qc_compute_overlap/*/*/photo_recon.orig.json",
+        "Imputed":     "best_recon_ss_qc_compute_overlap/*/*/photo_recon.machine_learning.json",
     }
     for method, pat in patterns.items():
         if method not in METHODS:
             continue
         for f in glob.glob(os.path.join(MADRC_DIR, pat)):
-            case = os.path.basename(os.path.dirname(f))
+            case = Path(f).parent.parent.name
             _emit(records, case, method, "MADRC", _read_overlap(f))
 
     if "Tricubic" in METHODS and INCLUDE_TRICUBIC_MADRC:
-        for folder in glob.glob(os.path.join(MADRC_DIR, "05_bicubic_registration", "*")):
+        for folder in glob.glob(os.path.join(MADRC_DIR, "04_bicubic_synthseg", "*")):
+        # for folder in glob.glob(os.path.join(MADRC_DIR, "04_bicubic_photosynthseg", "*")):
             case = os.path.basename(folder)
             hits = glob.glob(os.path.join(folder, "dice_*.json"))
             if not hits:
@@ -294,8 +303,13 @@ def build_latex(df: pd.DataFrame) -> str:
     L.append(r"\begin{table*}[h!]")
     L.append(r"\centering")
     L.append(r"\caption{")
-    L.append(r"Region-specific Dice scores of (warped) atlas segmentations "
-             r"and gold-standard segmentations (from the MRIs). ")
+    L.append(r"Region-specific Dice scores of automated segmentations of 3D "
+             r"reconstructions of photographs before and after imputation. "
+             r"Tricubic interpolation results are also shown. Gold-standard "
+             r"segmentations were obtained from MRI scans. Superscripts indicate "
+             r"statistically significant differences with respect to the "
+             r"Photo-recon method ($^{*}p<0.05$, $^{**}p<0.01$, $^{***}p<0.001$; "
+             r"Wilcoxon signed-rank test).}")
     L.append(r"\label{tab:task2_scores}")
     L.append(r"\begin{tabular}{lccc}")
     L.append(r"\toprule")
@@ -341,10 +355,12 @@ def build_pairwise_latex(df: pd.DataFrame) -> str:
         p = pmap[(cond, region, pair)]
         if p is None or (isinstance(p, float) and np.isnan(p)):
             return "--"
+        # s = stars(qmap[(cond, region, pair)])              # star by q (or raw p if APPLY_BH False)
+        # suffix = (r"\sym{%s}" % s) if s else r"\blank"
 
         if p < 0.001:
             return ("$< 0.001$")
-        return ("%.3f" % p) 
+        return ("%.3f" % p) #+ suffix
 
     if APPLY_BH:
         sig = (r"superscripts denote significance after Benjamini-Hochberg "
@@ -359,8 +375,9 @@ def build_pairwise_latex(df: pd.DataFrame) -> str:
     L.append(r"\centering")
     L.append(r"\caption{")
     L.append(r"Pairwise statistical comparisons of region-specific Dice between "
-             r"the three methods (Wilcoxon signed-rank test). }")
-    L.append(r"\label{tab:task3_pairwise}")
+             r"the three methods (Wilcoxon signed-rank test). Values are raw $p$-values; " + sig + r". Dashes indicate "
+             r"comparisons without paired samples}")
+    L.append(r"\label{tab:task2_pairwise}")
     L.append(r"\begin{tabular}{lccc}")
     L.append(r"\toprule")
 
@@ -448,30 +465,6 @@ def make_figure(df: pd.DataFrame) -> plt.Figure:
     ax.tick_params(axis="y", labelsize=20)
     ax.margins(x=0.01)
 
-    def box_x(region_idx: int, hue: str) -> float:
-        i = hue_order.index(hue)
-        return region_idx + width * ((i + 0.5) / n - 0.5)
-
-    # for ri, region in enumerate(FIGURE_REGION_ORDER):
-    #     for cond in CONDITIONS:
-    #         ref_hue = f"{REFERENCE} | {cond}"
-    #         if ref_hue not in hue_order:
-    #             continue
-    #         ref_vals = df[(df.Region == region)
-    #                       & (df.Hue == ref_hue)]["Dice"].to_numpy()
-    #         for method in ANNOTATE_METHODS_IN_FIGURE:
-    #             hue = f"{method} | {cond}"
-    #             if hue not in hue_order:
-    #                 continue
-    #             s = stars(paired_pvalue(df, cond, region, method))
-    #             if not s:
-    #                 continue
-    #             m_vals = df[(df.Region == region)
-    #                         & (df.Hue == hue)]["Dice"].to_numpy()
-    #             y = np.nanmax([_upper_whisker(ref_vals),
-    #                            _upper_whisker(m_vals)]) + 0.02
-                # _sig_bracket(ax, box_x(ri, ref_hue), box_x(ri, hue), y, s)
-
     _add_legends(ax)
     return fig
 
@@ -511,7 +504,7 @@ def save_outputs(df: pd.DataFrame) -> list:
     tex = os.path.join(OUT_DIR, "task2_scores.tex")
     Path(tex).write_text(build_latex(df) + "\n", encoding="utf-8")
 
-    tex_pair = os.path.join(OUT_DIR, "task3_pairwise.tex")
+    tex_pair = os.path.join(OUT_DIR, "task2_pairwise.tex")
     Path(tex_pair).write_text(build_pairwise_latex(df) + "\n", encoding="utf-8")
 
     audit = _write_audit(df)
@@ -531,9 +524,9 @@ def push_to_overleaf(files: list, repo=OVERLEAF_REPO,
     print(f"Pushed {len(files)} file(s) to {repo}")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Build Task 3 figure + LaTeX tables."
+        description="Build Task 2 figure + LaTeX tables."
     )
 
     parser.add_argument(
@@ -561,7 +554,7 @@ def main():
         "--overleaf-repo",
         type=str,
         default=None,
-        help="Optional local Overleaf repository."
+        help="Optional local Overleaf git repository."
     )
 
     parser.add_argument(
@@ -572,6 +565,7 @@ def main():
 
     args = parser.parse_args()
 
+    # Make paths globally visible so the rest of the script doesn't change
     global UW_DIR, MADRC_DIR, OUT_DIR, OVERLEAF_REPO
     UW_DIR = args.uw_dir
     MADRC_DIR = args.madrc_dir

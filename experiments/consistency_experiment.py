@@ -84,106 +84,110 @@ def evaluate_slice(orig_slice, imput_slice, slice_idx, condition_name, subject_i
         plt.savefig(os.path.join(output_dir, plot_name), bbox_inches='tight')
         plt.close()
 
-# name_8mm = 'photo_recon_8mm_tricubic.nii.gz'
-# name_12mm = 'photo_recon_12mm_tricubic.nii.gz'
-name_8mm = 'imputed_unet_8mm.nii.gz'
-name_12mm = 'imputed_unet_12mm.nii.gz'
+def main():
+    # name_8mm = 'photo_recon_8mm_tricubic.nii.gz'
+    # name_12mm = 'photo_recon_12mm_tricubic.nii.gz'
+    name_8mm = 'imputed_unet_8mm.nii.gz'
+    name_12mm = 'imputed_unet_12mm.nii.gz'
 
-# --- MAIN RUNNER LOOP ---
-for subject_id in SUBJECT_IDS:
-    print(f"\nProcessing Subject: {subject_id}...")
-    
-    # Define subject-specific paths
-    impute_8_path = os.path.join(BASE_IMPUTE_DIR, subject_id, name_8mm)
-    impute_12_path = os.path.join(BASE_IMPUTE_DIR, subject_id, name_12mm)
-    
-    # Check if imputation files exist before proceeding
-    if not os.path.exists(impute_8_path) or not os.path.exists(impute_12_path):
-        print(f"Skipping {subject_id}: Imputation files not found.")
-        continue
-
-    affs_orig, I_origs = [], []
-    skip_subject = False
-    
-    for thick in ['4', '8', '12']:
-        ref = os.path.join(BASE_REF_DIR, subject_id, f'photo_recon_correct_{thick}mm.nii.gz')
+    # --- MAIN RUNNER LOOP ---
+    for subject_id in SUBJECT_IDS:
+        print(f"\nProcessing Subject: {subject_id}...")
         
-        if not os.path.exists(ref):
-            print(f"Skipping {subject_id}: Missing reference {thick}mm file.")
-            skip_subject = True
-            break
-
-        ref_vol, head_ref = MRIread(ref)
-        I_orig, aff_orig, ap_flip = eugenios_closest_canonical(ref_vol, head_ref, return_ap_flip=True)
+        # Define subject-specific paths
+        impute_8_path = os.path.join(BASE_IMPUTE_DIR, subject_id, name_8mm)
+        impute_12_path = os.path.join(BASE_IMPUTE_DIR, subject_id, name_12mm)
         
-        voxsize = np.sqrt(np.sum(aff_orig[:-1,:-1]**2, axis=0))
-        av_thickness = voxsize[1]
-        affs_orig.append(av_thickness)
-        I_origs.append(I_orig)
-        
-    if skip_subject:
-        continue
-
-    print(f"Loading volumes for {subject_id}...")
-    vol8, head_imput8 = MRIread(impute_8_path)
-    vol12, head_imput12 = MRIread(impute_12_path)
-
-    # Establish dynamic data range for PSNR and SSIM based on the ground truth volume
-    data_range = float(np.max(I_origs[0]) - np.min(I_origs[0]))
-
-    # --- 8mm Imputation Evaluation ---
-    for i in range(1, I_origs[1].shape[1]):
-        j = int(np.ceil(affs_orig[1]*i))
-        idx = 2*i - 1
-        
-        if idx >= I_origs[0].shape[1] or j >= vol8.shape[1]:
+        # Check if imputation files exist before proceeding
+        if not os.path.exists(impute_8_path) or not os.path.exists(impute_12_path):
+            print(f"Skipping {subject_id}: Imputation files not found.")
             continue
 
-        orig_slice = I_origs[0][:, idx]
-        imput_slice = vol8[:, j] 
-        evaluate_slice(orig_slice, imput_slice, idx, '8mm', subject_id, data_range)
-
-    # --- 12mm Imputation Evaluation ---
-    for i in range(1, I_origs[2].shape[1]):
-        j = int(np.ceil(affs_orig[2]*i))
-        idx = 3*i  # NOTE: 3*i targets kept slices. Use 3*i-1 or 3*i-2 for missing slices.
+        affs_orig, I_origs = [], []
+        skip_subject = False
         
-        if idx >= I_origs[0].shape[1] or j >= vol12.shape[1]:
+        for thick in ['4', '8', '12']:
+            ref = os.path.join(BASE_REF_DIR, subject_id, f'photo_recon_correct_{thick}mm.nii.gz')
+            
+            if not os.path.exists(ref):
+                print(f"Skipping {subject_id}: Missing reference {thick}mm file.")
+                skip_subject = True
+                break
+
+            ref_vol, head_ref = MRIread(ref)
+            I_orig, aff_orig, ap_flip = eugenios_closest_canonical(ref_vol, head_ref, return_ap_flip=True)
+            
+            voxsize = np.sqrt(np.sum(aff_orig[:-1,:-1]**2, axis=0))
+            av_thickness = voxsize[1]
+            affs_orig.append(av_thickness)
+            I_origs.append(I_orig)
+            
+        if skip_subject:
             continue
 
-        orig_slice = I_origs[0][:, idx]
-        imput_slice = vol12[:, j] 
-        evaluate_slice(orig_slice, imput_slice, idx, '12mm', subject_id, data_range)
+        print(f"Loading volumes for {subject_id}...")
+        vol8, head_imput8 = MRIread(impute_8_path)
+        vol12, head_imput12 = MRIread(impute_12_path)
 
-# --- PROCESSING & SAVING RESULTS ---
-if not results_list:
-    print("\nNo data was processed. Please check your subject IDs and file paths.")
-else:
-    df_raw = pd.DataFrame(results_list)
-    
-    # Save raw slice-by-slice metrics
-    df_raw.to_csv(os.path.join(output_dir, 'metrics_raw_slices.csv'), index=False)
+        # Establish dynamic data range for PSNR and SSIM based on the ground truth volume
+        data_range = float(np.max(I_origs[0]) - np.min(I_origs[0]))
 
-    # ---------------------------------------------------------
-    # TABLE 1: Per-Volume Results (Mean metrics per subject)
-    # ---------------------------------------------------------
-    df_per_volume = df_raw.groupby(['Subject', 'Condition'])[['MAE', 'PSNR', 'SSIM']].mean().reset_index()
-    df_per_volume.to_csv(os.path.join(output_dir, 'metrics_per_volume.csv'), index=False)
-    
-    print("\n" + "="*60)
-    print("TABLE 1: PER-VOLUME METRICS SUMMARY")
-    print("="*60)
-    print(df_per_volume.to_string(index=False))
+        # --- 8mm Imputation Evaluation ---
+        for i in range(1, I_origs[1].shape[1]):
+            j = int(np.ceil(affs_orig[1]*i))
+            idx = 2*i - 1
+            
+            if idx >= I_origs[0].shape[1] or j >= vol8.shape[1]:
+                continue
 
-    # ---------------------------------------------------------
-    # TABLE 2: Overall statistics across the entire cohort
-    # ---------------------------------------------------------
-    # We group by the per-volume dataframe so that volumes with more slices 
-    # don't unfairly weight the overall average.
-    df_overall_summary = df_per_volume.groupby('Condition')[['MAE', 'PSNR', 'SSIM']].agg(['mean', 'std'])
-    df_overall_summary.to_csv(os.path.join(output_dir, 'metrics_overall_cohort_summary.csv'))
-    
-    print("\n" + "="*60)
-    print("TABLE 2: OVERALL POPULATION SUMMARY (MEAN & STD ACROSS VOLUMES)")
-    print("="*60)
-    print(df_overall_summary)
+            orig_slice = I_origs[0][:, idx]
+            imput_slice = vol8[:, j] 
+            evaluate_slice(orig_slice, imput_slice, idx, '8mm', subject_id, data_range)
+
+        # --- 12mm Imputation Evaluation ---
+        for i in range(1, I_origs[2].shape[1]):
+            j = int(np.ceil(affs_orig[2]*i))
+            idx = 3*i  # NOTE: 3*i targets kept slices. Use 3*i-1 or 3*i-2 for missing slices.
+            
+            if idx >= I_origs[0].shape[1] or j >= vol12.shape[1]:
+                continue
+
+            orig_slice = I_origs[0][:, idx]
+            imput_slice = vol12[:, j] 
+            evaluate_slice(orig_slice, imput_slice, idx, '12mm', subject_id, data_range)
+
+    # --- PROCESSING & SAVING RESULTS ---
+    if not results_list:
+        print("\nNo data was processed. Please check your subject IDs and file paths.")
+    else:
+        df_raw = pd.DataFrame(results_list)
+        
+        # Save raw slice-by-slice metrics
+        df_raw.to_csv(os.path.join(output_dir, 'metrics_raw_slices.csv'), index=False)
+
+        # ---------------------------------------------------------
+        # TABLE 1: Per-Volume Results (Mean metrics per subject)
+        # ---------------------------------------------------------
+        df_per_volume = df_raw.groupby(['Subject', 'Condition'])[['MAE', 'PSNR', 'SSIM']].mean().reset_index()
+        df_per_volume.to_csv(os.path.join(output_dir, 'metrics_per_volume.csv'), index=False)
+        
+        print("\n" + "="*60)
+        print("TABLE 1: PER-VOLUME METRICS SUMMARY")
+        print("="*60)
+        print(df_per_volume.to_string(index=False))
+
+        # ---------------------------------------------------------
+        # TABLE 2: Overall statistics across the entire cohort
+        # ---------------------------------------------------------
+        # We group by the per-volume dataframe so that volumes with more slices 
+        # don't unfairly weight the overall average.
+        df_overall_summary = df_per_volume.groupby('Condition')[['MAE', 'PSNR', 'SSIM']].agg(['mean', 'std'])
+        df_overall_summary.to_csv(os.path.join(output_dir, 'metrics_overall_cohort_summary.csv'))
+        
+        print("\n" + "="*60)
+        print("TABLE 2: OVERALL POPULATION SUMMARY (MEAN & STD ACROSS VOLUMES)")
+        print("="*60)
+        print(df_overall_summary)
+
+if __name__ == "main":
+    main()

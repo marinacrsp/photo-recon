@@ -128,8 +128,8 @@ def load_uw(records: list) -> None:
     """UW cohort: three parallel subfolders sharing case-folder names."""
     sub_method = {
         "04_photo_recon_synthseg": "Photo-recon",
-        "04_bicubic_synthseg": "Tricubic",
-        "04_unet_synthseg": "Imputed",
+        "04_bicubic_photosynthseg": "Tricubic",
+        "04_unet_photosynthseg": "Imputed",
     }
     
     ref_sub = "04_photo_recon_synthseg"
@@ -146,9 +146,10 @@ def load_uw(records: list) -> None:
                 elif method == 'Photo-recon':
                     hits = glob.glob(os.path.join(UW_DIR, sub, case, f"synthseg_photo_recon*{d}.json"))
                 elif method == 'Imputed':
-                    hits = glob.glob(os.path.join(UW_DIR, sub, case, f"synthseg_imputed_unet*{d}.json"))
+                    # hits = glob.glob(os.path.join(UW_DIR, sub, case, f"synthseg_imputed_unet*{d}.json"))
+                    hits = glob.glob(os.path.join(UW_DIR, sub, case, f"dice_scores*{d}.json"))
                 else:
-                    hits = glob.glob(os.path.join(UW_DIR, sub, case, f"dice_*{d}.txt"))
+                    hits = glob.glob(os.path.join(UW_DIR, sub, case, f"dice_*{d}.json"))
                 if not hits or not os.path.exists(hits[0]):
                     continue
                 _emit(records, case, method, d, _read_overlap(hits[0]))
@@ -158,7 +159,8 @@ def load_madrc(records: list) -> None:
     """MADRC cohort: PR/Imputed from overlap txt, Tricubic from dice_*.json."""
     patterns = {
         "Photo-recon": "best_recon_ss_qc_compute_overlap/*/*/photo_recon.orig.json",
-        "Imputed":     "best_recon_ss_qc_compute_overlap/*/*/photo_recon.machine_learning.json",
+        "Imputed": "06_unet_photosynthseg/*/dice_*.json",
+        # "Imputed":     "best_recon_ss_qc_compute_overlap/*/*/photo_recon.machine_learning.json",
     }
     for method, pat in patterns.items():
         if method not in METHODS:
@@ -168,7 +170,8 @@ def load_madrc(records: list) -> None:
             _emit(records, case, method, "MADRC", _read_overlap(f))
 
     if "Tricubic" in METHODS and INCLUDE_TRICUBIC_MADRC:
-        for folder in glob.glob(os.path.join(MADRC_DIR, "04_bicubic_synthseg", "*")):
+        # for folder in glob.glob(os.path.join(MADRC_DIR, "04_bicubic_synthseg", "*")):
+        for folder in glob.glob(os.path.join(MADRC_DIR, "04_bicubic_photosynthseg", "*")):
             case = os.path.basename(folder)
             hits = glob.glob(os.path.join(folder, "dice_*.json"))
             if not hits:
@@ -430,16 +433,60 @@ def push_to_overleaf(files: list, repo=OVERLEAF_REPO,
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Build Task 2 figure + LaTeX table.")
-    ap.add_argument("--push", action="store_true",
-                    help="copy outputs into OVERLEAF_REPO, git commit and push")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser(
+        description="Build Task 2 figure + LaTeX table."
+    )
+
+    parser.add_argument(
+        "--uw-dir",
+        type=str,
+        required=True,
+        help="Path to the UW dataset."
+    )
+
+    parser.add_argument(
+        "--madrc-dir",
+        type=str,
+        required=True,
+        help="Path to the MADRC dataset."
+    )
+
+    parser.add_argument(
+        "--out-dir",
+        type=str,
+        required=True,
+        help="Directory where outputs will be written."
+    )
+
+    parser.add_argument(
+        "--overleaf-repo",
+        type=str,
+        default=None,
+        help="Optional local Overleaf git repository."
+    )
+
+    parser.add_argument(
+        "--push",
+        action="store_true",
+        help="Copy outputs to Overleaf and git push."
+    )
+
+    args = parser.parse_args()
+
+    # Make paths globally visible so the rest of the script doesn't change
+    global UW_DIR, MADRC_DIR, OUT_DIR, OVERLEAF_REPO
+    UW_DIR = args.uw_dir
+    MADRC_DIR = args.madrc_dir
+    OUT_DIR = args.out_dir
+    OVERLEAF_REPO = args.overleaf_repo
 
     df = build_dataframe()
     outputs = save_outputs(df)
+
     print("Wrote:")
     for f in outputs:
-        print("  ", f)
+        print(f"  {f}")
+
     if args.push:
         push_to_overleaf(outputs)
 
