@@ -1,6 +1,8 @@
 # Photo-recon imputation and evaluation pipeline
 
-<img src="imgs/framework_git.png" alt="Photo-recon imputation framework" width="500" height="480">
+<p align="center">
+  <img src="imgs/framework_git.png" alt="Photo-recon imputation framework" width="500" />
+</p>
 
 This repository contains the training, inference, and evaluation code for a 2D U-Net-based slice imputation pipeline applied to dissection-photo reconstructions. The code on the current main branch focuses on three pieces:
 
