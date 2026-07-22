@@ -15,7 +15,7 @@ import nibabel as nib
 ROOT      = "/home/marina/ms_thesis/photo_recon_uw"
 OUT_ROOT  = "/home/marina/ms_thesis/evaluation_results/videos"
 SWEEP_DIR = os.path.join(OUT_ROOT, "sweeps")
-VIEWSIZE  = "750 750"
+VIEWSIZE  = "600 600"
 FRAMERATE = 10
 LABELS    = "2,3,4,10,11,12,13,17,18,26,28,41,42,43,49,50,51,52,53,54,58,60"  # all but CSF(24)
 
@@ -28,32 +28,32 @@ def frames_dir(base, subdir, plane):
     return d
 
 # ============================ UNET IMPUTATION ============================
-# vol_path = f"{ROOT}/02_imputations_unet/18-0086/imputed_unet_correct_8mm.nii.gz"
-# vol_arg  = f"{vol_path}:rgb=true"
-# img = nib.load(vol_path)
-# nx, ny, nz = img.shape[:3]
-# cx, cy, cz = nx // 2, ny // 2, nz // 2
-# pad = max(3, len(str(nx - 1)))
+vol_path = f"{ROOT}/02_imputations_unet/18-0086/imputed_unet_correct_8mm.nii.gz"
+vol_arg  = f"{vol_path}:rgb=true"
+img = nib.load(vol_path)
+nx, ny, nz = img.shape[:3]
+cx, cy, cz = nx // 2, ny // 2, nz // 2
+pad = max(3, len(str(nx - 1)))
 
-# d = frames_dir("unet_frames", "unet_frames", "axial")
-# sweep = os.path.join(SWEEP_DIR, "sweep_unet_axial.txt")
-# with open(sweep, "w") as f:
-#     f.write("-viewport axial\n")
-#     for i in range(ny,0,-1): 
-#         f.write(f"-slice {cx} {cz} {i}\n")
-#         f.write(f"-ss {d}/frame_{-(i-ny):0{pad}d}.png 1\n")
-#     f.write("-quit\n")
-# jobs.append(("unet", "axial", vol_arg, sweep, d))
+d = frames_dir("unet_frames", "unet_frames", "axial")
+sweep = os.path.join(SWEEP_DIR, "sweep_unet_axial.txt")
+with open(sweep, "w") as f:
+    f.write("-viewport axial\n")
+    for i in range(ny,0,-1): 
+        f.write(f"-slice {cx} {cz} {i}\n")
+        f.write(f"-ss {d}/frame_{-(i-ny):0{pad}d}.png 1\n")
+    f.write("-quit\n")
+jobs.append(("unet", "axial", vol_arg, sweep, d))
 
-# d = frames_dir("unet_frames", "unet_frames", "sagittal")
-# sweep = os.path.join(SWEEP_DIR, "sweep_unet_sagittal.txt")
-# with open(sweep, "w") as f:
-#     f.write("-viewport sagittal\n")
-#     for i in range(ny):        # sweep sagittal (X); use range(a, b) to trim empty ends
-#         f.write(f"-slice {i} {cz} {cy}\n")
-#         f.write(f"-ss {d}/frame_{i:0{pad}d}.png 1\n")
-#     f.write("-quit\n")
-# jobs.append(("unet", "sagittal", vol_arg, sweep, d))
+d = frames_dir("unet_frames", "unet_frames", "sagittal")
+sweep = os.path.join(SWEEP_DIR, "sweep_unet_sagittal.txt")
+with open(sweep, "w") as f:
+    f.write("-viewport sagittal\n")
+    for i in range(ny):        # sweep sagittal (X); use range(a, b) to trim empty ends
+        f.write(f"-slice {i} {cz} {cy}\n")
+        f.write(f"-ss {d}/frame_{i:0{pad}d}.png 1\n")
+    f.write("-quit\n")
+jobs.append(("unet", "sagittal", vol_arg, sweep, d))
 
 # ============================ PHOTO RECON ============================
 # NOTE: this path matches the imputation block in your pasted code. Set the real
@@ -86,63 +86,64 @@ with open(sweep, "w") as f:
 jobs.append(("photo_recon", "sagittal", vol_arg, sweep, d))
 
 # ============================ MRI ============================
-# vol_path = f"{ROOT}/00_photo_recon/18-0086/mri.deformed.mgz"
-# vol_arg  = vol_path
-# img = nib.load(vol_path)
-# nx, ny, nz = img.shape[:3]
-# cx, cy, cz = nx // 2, ny // 2, nz // 2
-# pad = max(3, len(str(nx - 1)))
+vol_path = f"{ROOT}/00_photo_recon/18-0086/mri.deformed.mgz"
+vol_arg  = vol_path
+img = nib.load(vol_path)
+nx, ny, nz = img.shape[:3]
+cx, cy, cz = nx // 2, ny // 2, nz // 2
+pad = max(3, len(str(nx - 1)))
 
-# d = frames_dir("mri_frames", "mri_frames", "axial")
-# sweep = os.path.join(SWEEP_DIR, "sweep_mri_axial.txt")
-# with open(sweep, "w") as f:
-#     f.write("-viewport axial\n")
-#     for i in range(nx):
-#         f.write(f"-slice {i} {cy} {cz}\n")
-#         f.write(f"-ss {d}/frame_{i:0{pad}d}.png 1\n")
-#     f.write("-quit\n")
-# jobs.append(("mri", "axial", vol_arg, sweep, d))
+d = frames_dir("mri_frames", "mri_frames", "axial")
+sweep = os.path.join(SWEEP_DIR, "sweep_mri_axial.txt")
+with open(sweep, "w") as f:
+    f.write("-viewport axial\n")
+    for i in range(nx):
+        f.write(f"-slice {i} {cy} {cz}\n")
+        f.write(f"-ss {d}/frame_{i:0{pad}d}.png 1\n")
+    f.write("-quit\n")
+jobs.append(("mri", "axial", vol_arg, sweep, d))
 
-# d = frames_dir("mri_frames", "mri_frames", "sagittal")
-# sweep = os.path.join(SWEEP_DIR, "sweep_mri_sagittal.txt")
-# with open(sweep, "w") as f:
-#     f.write("-viewport sagittal\n")
-#     for i in range(ny):
-#         f.write(f"-slice {cx} {i} {cz}\n")
-#         f.write(f"-ss {d}/frame_{i:0{pad}d}.png 1\n")
-#     f.write("-quit\n")
-# jobs.append(("mri", "sagittal", vol_arg, sweep, d))
+d = frames_dir("mri_frames", "mri_frames", "sagittal")
+sweep = os.path.join(SWEEP_DIR, "sweep_mri_sagittal.txt")
+with open(sweep, "w") as f:
+    f.write("-viewport sagittal\n")
+    for i in range(ny):
+        f.write(f"-slice {cx} {i} {cz}\n")
+        f.write(f"-ss {d}/frame_{i:0{pad}d}.png 1\n")
+    f.write("-quit\n")
+jobs.append(("mri", "sagittal", vol_arg, sweep, d))
 
 # ============================ UNET SEGMENTATION ============================
-# vol_path = f"{ROOT}/04_unet_synthseg/18-0086/synthseg_mri.mgz"
-# vol_arg  = f"{vol_path}:colormap=lut:select_label={LABELS}"
-# img = nib.load(vol_path)
-# nx, ny, nz = img.shape[:3]
-# cx, cy, cz = nx // 2, ny // 2, nz // 2
-# pad = max(3, len(str(nx - 1)))
+vol_path = f"{ROOT}/04_unet_synthseg/18-0086/synthseg_mri.mgz"
+vol_arg  = f"{vol_path}:colormap=lut:select_label={LABELS}"
+img = nib.load(vol_path)
+nx, ny, nz = img.shape[:3]
+cx, cy, cz = nx // 2, ny // 2, nz // 2
+pad = max(3, len(str(nx - 1)))
 
-# d = frames_dir("mri_segmentation", "mri_segmentation_frames", "axial")
-# sweep = os.path.join(SWEEP_DIR, "sweep_seg_axial.txt")
-# with open(sweep, "w") as f:
-#     f.write("-viewport axial\n")
-#     for i in range(nx):
-#         f.write(f"-slice {i} {cy} {cz}\n")
-#         f.write(f"-ss {d}/frame_{i:0{pad}d}.png 1\n")
-#     f.write("-quit\n")
-# jobs.append(("mri_segmentation", "axial", vol_arg, sweep, d))
+d = frames_dir("mri_segmentation", "mri_segmentation_frames", "axial")
+sweep = os.path.join(SWEEP_DIR, "sweep_seg_axial.txt")
+with open(sweep, "w") as f:
+    f.write("-viewport axial\n")
+    for i in range(nx):
+        f.write(f"-slice {i} {cy} {cz}\n")
+        f.write(f"-ss {d}/frame_{i:0{pad}d}.png 1\n")
+    f.write("-quit\n")
+jobs.append(("mri_segmentation", "axial", vol_arg, sweep, d))
 
-# d = frames_dir("mri_segmentation", "mri_segmentation_frames", "sagittal")
-# sweep = os.path.join(SWEEP_DIR, "sweep_seg_sagittal.txt")
-# with open(sweep, "w") as f:
-#     f.write("-viewport sagittal\n")
-#     for i in range(ny):
-#         f.write(f"-slice {cx} {i} {cz}\n")
-#         f.write(f"-ss {d}/frame_{i:0{pad}d}.png 1\n")
-#     f.write("-quit\n")
-# jobs.append(("mri_segmentation", "sagittal", vol_arg, sweep, d))
+d = frames_dir("mri_segmentation", "mri_segmentation_frames", "sagittal")
+sweep = os.path.join(SWEEP_DIR, "sweep_seg_sagittal.txt")
+with open(sweep, "w") as f:
+    f.write("-viewport sagittal\n")
+    for i in range(ny):
+        f.write(f"-slice {cx} {i} {cz}\n")
+        f.write(f"-ss {d}/frame_{i:0{pad}d}.png 1\n")
+    f.write("-quit\n")
+jobs.append(("mri_segmentation", "sagittal", vol_arg, sweep, d))
 
 # ============================ BASH RUNNER ============================
 lines = ["#!/usr/bin/env bash", "# generated by make_videos.py", "set -uo pipefail", ""]
+video_files = {}
 for name, plane, vol_arg, sweep, d in jobs:
     video = os.path.join(os.path.dirname(d), f"{name}_{plane}.mp4")
     lines += [
@@ -156,6 +157,31 @@ for name, plane, vol_arg, sweep, d in jobs:
         f'    "{video}"',
         "",
     ]
+
+    video_files[(name, plane)] = video
+
+photo = video_files[("photo_recon", "sagittal")]
+unet  = video_files[("unet", "sagittal")]
+mri   = video_files[("mri", "sagittal")]
+seg   = video_files[("mri_segmentation", "sagittal")]
+
+lines += [
+    "",
+    "ffmpeg \\",
+    f'    -i "{photo}" \\',
+    f'    -i "{unet}" \\',
+    f'    -i "{mri}" \\',
+    f'    -i "{seg}" \\',
+    '    -filter_complex "[0:v]scale=800:540[v0];'
+    '[1:v]scale=800:540[v1];'
+    '[2:v]scale=800:540[v2];'
+    '[3:v]scale=800:540[v3];'
+    '[v0][v1][v2][v3]xstack=inputs=4:layout=0_0|800_0|0_540|800_540[v]" \\',
+    '    -map "[v]" \\',
+    '    -c:v libx264 \\',
+    f'    "{os.path.join(OUT_ROOT, "video_photorecons.mp4")}"',
+    ""
+]
 
 run_path = os.path.join(OUT_ROOT, "run_all_videos.sh")
 with open(run_path, "w") as f:

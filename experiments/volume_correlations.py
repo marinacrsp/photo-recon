@@ -59,6 +59,7 @@ METHOD_COLORS = {
     "Imputed":     "#C8624C",
 }
 DISTANCES = ["4mm", "8mm", "12mm"]
+EXCLUDE_LABEL_PATTERNS = ["csf", "brainstem", "cerebellum", "ventraldc", "accumbens", "inf", "3rd"]
 
 DISTANCE_COLORS = {
     "4mm":  "#1f77b4",   # blue
@@ -330,7 +331,7 @@ def make_figure(df: pd.DataFrame, ref_df: pd.DataFrame) -> plt.Figure:
             stats_txt = (
                 f"Bias = {bias_all:+.1f} %\n"
                 f"LoA  [{loa_lo:+.1f}, {loa_hi:+.1f}] %\n"
-                f"n = {len(m)}"
+                # f"n = {len(m)}"
             )
             ax.text(
                 0.03, 0.97, stats_txt,
@@ -374,6 +375,25 @@ def write_audit(df: pd.DataFrame, ref_vols_by_label: dict) -> str:
     pd.DataFrame(rows).to_csv(path, index=False, encoding="utf-8-sig")
     return path
 
+# =============================================================================
+# LABEL EXCLUSION
+# =============================================================================
+def _squash_label(label: str) -> str:
+    """Lowercase and remove separators/spaces for robust label matching."""
+    return re.sub(r"[^a-z0-9]", "", str(label).lower())
+
+
+def is_excluded_label(label: str) -> bool:
+    s = _squash_label(label)
+    return any(pat in s for pat in EXCLUDE_LABEL_PATTERNS)
+
+
+def drop_excluded_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove rows whose (normalized) label matches EXCLUDE_LABEL_PATTERNS."""
+    if df.empty:
+        return df
+    keep = ~df["Label"].map(is_excluded_label)
+    return df[keep].copy()
 
 # =============================================================================
 # LATEX TABLE
@@ -697,7 +717,9 @@ def main():
     print("[Combining left/right hemispheres...]")
     df     = combine_hemispheres(df)
     ref_df = combine_reference_hemispheres(ref_df)
-
+    print("[Excluding extra labels...]")
+    df     = drop_excluded_labels(df)
+    ref_df = drop_excluded_labels(ref_df)
     ref_vols_by_label = ref_df.groupby("Label")["Volume_mm3"].mean().to_dict()
 
     print(f"  Prediction rows : {len(df):,}")

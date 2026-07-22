@@ -59,7 +59,7 @@ METHODS = ["Photo-recon", "Tricubic", "Imputed"]
 # Labels to exclude from the analysis. Matching is case-insensitive against the
 # label with separators/spaces removed, so "Brain-Stem", "Brain Stem" and
 # "Brainstem" all match "brainstem", and any label containing "CSF" matches "csf".
-EXCLUDE_LABEL_PATTERNS = ["csf", "brainstem"]
+EXCLUDE_LABEL_PATTERNS = ["csf", "brainstem", "cerebellum", "ventraldc", "accumbens", "inf", "3rd"]
 
 plt.rcParams.update({
     "font.size": 14,
@@ -343,7 +343,7 @@ def make_figure(df: pd.DataFrame, ref_df: pd.DataFrame) -> plt.Figure:
             stats_txt = (
                 f"Bias = {bias_all:+.1f} %\n"
                 f"LoA  [{loa_lo:+.1f}, {loa_hi:+.1f}] %\n"
-                f"n = {len(m)}"
+                # f"n = {len(m)}"
             )
             ax.text(
                 0.03, 0.97, stats_txt,
