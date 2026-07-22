@@ -1,5 +1,7 @@
 # Improving Neuropathological Reconstruction Fidelity via AI Slice Imputation
-<img src="imgs/framework_git.png" alt="Super-Resolution framework" width="" height="">
+<img src="imgs/framework_git.png" alt="Super-Resolution framework" width="500" height="480">
+
+
 A 2D U-Net that imputes intermediate coronal slices to turn anisotropic 3D reconstructions
 of dissection photographs into anatomically consistent, near-isotropic volumes. The network
 is trained entirely on domain-randomized synthetic data generated on the fly from 1 mm
