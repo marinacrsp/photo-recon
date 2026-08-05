@@ -7,7 +7,7 @@ from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import mean_squared_error, peak_signal_noise_ratio
 import torch.nn as nn
 # Assuming these are your custom external functions/classes
-from ext import MRIread, eugenios_closest_canonical
+from ext.photo_imputation_utils import MRIread, eugenios_closest_canonical
 
 # --- CONFIGURATION ---
 # Define your list of subject IDs here
@@ -18,7 +18,7 @@ SUBJECT_IDS = os.listdir(BASE_IMPUTE_DIR)
 # Base directories to construct paths dynamically
 BASE_REF_DIR = '/home/marina/ms_thesis/photo_recon_uw/00_photo_recon'
 
-output_dir = './evaluation_results/imputations'
+output_dir = '/home/marina/ms_thesis/evaluation_results/imputations2'
 os.makedirs(output_dir, exist_ok=True)
 
 # Plotting control
@@ -189,5 +189,5 @@ def main():
         print("="*60)
         print(df_overall_summary)
 
-if __name__ == "main":
+if __name__ == "__main__":
     main()

@@ -66,7 +66,7 @@ PAIRS = [("Photo-recon", "Tricubic"),
 # When True, the pairwise table prints the raw p-value and keys its significance
 # stars to the corrected q-value. Set False to star the raw p (no correction);
 # the caption text switches accordingly.
-APPLY_BH = False
+APPLY_BH = True
 
 # -----------------------------------------------------------------------------
 REFERENCE = "Photo-recon"
@@ -201,7 +201,7 @@ def build_dataframe() -> pd.DataFrame:
 # STATISTICS
 # =============================================================================
 def paired_pvalue(df: pd.DataFrame, condition: str, region: str,
-                  method: str, reference: str = REFERENCE) -> float:
+                  method: str, reference: str = REFERENCE, n_hypotheses: int = 108) -> float:
     """Wilcoxon signed-rank of `method` vs `reference`, paired on (Case, Label)."""
     sel = (df.Condition == condition) & (df.Region == region)
     a = df[sel & (df.Method == method)][["Case", "Label", "Dice"]]
@@ -324,6 +324,11 @@ def build_latex(df: pd.DataFrame) -> str:
     return "\n".join(L)
 
 
+def valid_m(pvals) -> int:
+    """Tests actually performed (non-NaN) in a family."""
+    p = np.asarray(pvals, dtype=float)
+    return int(np.count_nonzero(~np.isnan(p)))
+
 def build_pairwise_latex(df: pd.DataFrame) -> str:
     """Second table: all three pairwise p-values per region and condition."""
     # 1) collect raw p-values across the whole family in a fixed order
@@ -333,17 +338,15 @@ def build_pairwise_latex(df: pd.DataFrame) -> str:
             for m1, m2 in PAIRS:
                 keys.append((cond, region, (m1, m2)))
                 raw.append(pairwise_pvalue(df, cond, region, m1, m2))
+    m_valid = valid_m(raw)
     q = benjamini_hochberg(raw) if APPLY_BH else np.asarray(raw, dtype=float)
-    pmap = dict(zip(keys, raw))
+    pmap = dict(zip(keys, q))
     qmap = dict(zip(keys, q))
 
     def fmt(cond, region, pair):
         p = pmap[(cond, region, pair)]
         if p is None or (isinstance(p, float) and np.isnan(p)):
             return "--"
-
-        if p < 0.001:
-            return ("$< 0.001$")
         return ("%.3f" % p) 
 
     if APPLY_BH:
@@ -354,16 +357,18 @@ def build_pairwise_latex(df: pd.DataFrame) -> str:
         sig = (r"superscripts denote significance "
                r"($^{*}p<0.05$, $^{**}p<0.01$, $^{***}p<0.001$)")
 
-    L = []
-    L.append(r"\begin{table*}[h!]")
-    L.append(r"\centering")
-    L.append(r"\caption{")
-    L.append(r"Pairwise statistical comparisons of region-specific Dice between "
-             r"the three methods (Wilcoxon signed-rank test). }")
-    L.append(r"\label{tab:task3_pairwise}")
-    L.append(r"\begin{tabular}{lccc}")
-    L.append(r"\toprule")
-
+    caption = (
+            r"Pairwise statistical comparisons of the per-subject absolute volume "
+            r"errors between reconstruction methods, for the MADRC and UW datasets, "
+            r"by region and slab distance (" +
+            ("Wilcoxon signed-rank, paired") +
+            r"). Reported values are Benjamini-Hochberg adjusted $q$-values "
+            r"controlling the false discovery rate across the $m=%d$ comparisons in "
+            r"this table." % m_valid
+        )
+    
+    L = [r"\begin{table}[h!]", r"\centering", r"\caption{", caption, r"}",
+         r"\begin{tabular}{l%s}" % ("c" * len(CONDITIONS)), r"\toprule"]
     for ci, cond in enumerate(TABLE_COND_ORDER):
         L.append(r"\multicolumn{4}{c}{\textbf{%s}} \\" % COND_TABLE_NAME[cond])
         L.append(r"\midrule")
@@ -415,14 +420,14 @@ def _add_legends(ax) -> None:
 
     legends = []
     specs = [("3D Reconstruction\nof slab photographs", "Photo-recon", 0.02),
-             ("Tricubic", "Tricubic", 0.24),
+             ("Tricubic", "Tricubic", 0.23),
              ("Imputed", "Imputed", 0.40)]
     for title, method, x in specs:
         if method not in METHODS:
             continue
         leg = ax.legend(handles=patches(method), title=title, loc="lower left",
-                        bbox_to_anchor=(x, 0.02), title_fontsize=13,
-                        fontsize=12, frameon=True)
+                        bbox_to_anchor=(x, 0.02), title_fontsize=16,
+                        fontsize=16, frameon=True)
         legends.append(leg)
     for leg in legends:
         ax.add_artist(leg)
@@ -502,8 +507,8 @@ def save_outputs(df: pd.DataFrame) -> list:
     os.makedirs(OUT_DIR, exist_ok=True)
 
     fig = make_figure(df)
-    svg = os.path.join(OUT_DIR, "task2_combined_boxplot.svg")
-    pdf = os.path.join(OUT_DIR, "task2_combined_boxplot.pdf")
+    svg = os.path.join(OUT_DIR, "task_3_uwmadrc_atlas_registrations_nifty.svg")
+    pdf = os.path.join(OUT_DIR, "task_3_uwmadrc_atlas_registrations_nifty.pdf")
     fig.savefig(svg, bbox_inches="tight", dpi=300)
     fig.savefig(pdf, bbox_inches="tight", dpi=300)
     plt.close(fig)

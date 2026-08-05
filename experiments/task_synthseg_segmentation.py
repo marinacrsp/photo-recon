@@ -72,7 +72,7 @@ PAIRS = [("Photo-recon", "Tricubic"),
 # When True, the pairwise table prints the raw p-value and keys its significance
 # stars to the corrected q-value. Set False to star the raw p (no correction);
 # the caption text switches accordingly.
-APPLY_BH = False
+APPLY_BH = True
 
 # -----------------------------------------------------------------------------
 REFERENCE = "Photo-recon"
@@ -107,9 +107,9 @@ PALETTE = {
     "Tricubic | 12mm": "#776E99", "Tricubic | MADRC": "#7079CF",
 }
 
-plt.rcParams.update({"font.size": 18, "axes.labelsize": 22,
+plt.rcParams.update({"font.size": 24, "axes.labelsize": 24,
                      "xtick.labelsize": 20, "ytick.labelsize": 20,
-                     "legend.fontsize": 16})
+                     "legend.fontsize": 24})
 
 
 # =============================================================================
@@ -210,7 +210,7 @@ def build_dataframe() -> pd.DataFrame:
 # STATISTICS
 # =============================================================================
 def paired_pvalue(df: pd.DataFrame, condition: str, region: str,
-                  method: str, reference: str = REFERENCE) -> float:
+                  method: str, reference: str = REFERENCE,  n_hypotheses: int = 72) -> float:
     """Wilcoxon signed-rank of `method` vs `reference`, paired on (Case, Label)."""
     sel = (df.Condition == condition) & (df.Region == region)
     a = df[sel & (df.Method == method)][["Case", "Label", "Dice"]]
@@ -262,7 +262,7 @@ def benjamini_hochberg(pvals) -> np.ndarray:
     order = idx[np.argsort(p[idx])]
     ranked = p[order]
     adj = ranked * m / np.arange(1, m + 1)
-    adj = np.minimum.accumulate(adj[::-1])[::-1]            # enforce monotonicity
+    adj = np.minimum.accumulate(adj[::-1])[::-1]  # it returns the smallest minimum seen recurrently in a sequence, then reverted
     q[order] = np.clip(adj, 0.0, 1.0)
     return q
 
@@ -348,8 +348,7 @@ def build_pairwise_latex(df: pd.DataFrame) -> str:
                 keys.append((cond, region, (m1, m2)))
                 raw.append(pairwise_pvalue(df, cond, region, m1, m2))
     q = benjamini_hochberg(raw) if APPLY_BH else np.asarray(raw, dtype=float)
-    pmap = dict(zip(keys, raw))
-    qmap = dict(zip(keys, q))
+    pmap = dict(zip(keys, q))
 
     def fmt(cond, region, pair):
         p = pmap[(cond, region, pair)]
@@ -357,9 +356,6 @@ def build_pairwise_latex(df: pd.DataFrame) -> str:
             return "--"
         # s = stars(qmap[(cond, region, pair)])              # star by q (or raw p if APPLY_BH False)
         # suffix = (r"\sym{%s}" % s) if s else r"\blank"
-
-        if p < 0.001:
-            return ("$< 0.001$")
         return ("%.3f" % p) #+ suffix
 
     if APPLY_BH:
@@ -432,14 +428,14 @@ def _add_legends(ax) -> None:
 
     legends = []
     specs = [("3D Reconstruction\nof slab photographs", "Photo-recon", 0.02),
-             ("Tricubic", "Tricubic", 0.24),
+             ("Tricubic", "Tricubic", 0.23),
              ("Imputed", "Imputed", 0.40)]
     for title, method, x in specs:
         if method not in METHODS:
             continue
         leg = ax.legend(handles=patches(method), title=title, loc="lower left",
-                        bbox_to_anchor=(x, 0.02), title_fontsize=13,
-                        fontsize=12, frameon=True)
+                                bbox_to_anchor=(x, 0.02), title_fontsize=16,
+                                fontsize=16, frameon=True)
         legends.append(leg)
     for leg in legends:
         ax.add_artist(leg)
@@ -461,7 +457,7 @@ def make_figure(df: pd.DataFrame) -> plt.Figure:
                 width=width, ax=ax)
     # ax.set_ylabel("Synthseg", fontsize=22)
     ax.set_xlabel("")
-    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=20)
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=17)
     ax.tick_params(axis="y", labelsize=20)
     ax.margins(x=0.01)
 
@@ -495,8 +491,8 @@ def save_outputs(df: pd.DataFrame) -> list:
     os.makedirs(OUT_DIR, exist_ok=True)
 
     fig = make_figure(df)
-    svg = os.path.join(OUT_DIR, "task2_combined_boxplot.svg")
-    pdf = os.path.join(OUT_DIR, "task2_combined_boxplot.pdf")
+    svg = os.path.join(OUT_DIR, "task_2_uwmadrc_volume_segmentations.svg")
+    pdf = os.path.join(OUT_DIR, "task_2_uwmadrc_volume_segmentations.pdf")
     fig.savefig(svg, bbox_inches="tight", dpi=300)
     fig.savefig(pdf, bbox_inches="tight", dpi=300)
     plt.close(fig)
