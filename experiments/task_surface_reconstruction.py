@@ -44,7 +44,7 @@ Usage:
 """
 
 from __future__ import annotations
-
+from matplotlib.transforms import ScaledTranslation
 import os
 import re
 import argparse
@@ -71,7 +71,7 @@ MADRC_DIR = None
 OUT_DIR = None
 CACHE = None
 OVERLEAF_REPO = None
-APPLY_BH = True
+APPLY_BH = False
 # Parent under MADRC_DIR that holds the gold standard and the co-located methods.
 MADRC_QC_PARENT = "best_recon_ss_qc"
 
@@ -162,9 +162,9 @@ CAPTION_PVALUES = (
     "between reconstruction methods. P-values from " + TEST_NAME[TEST] +
     " tests are reported for all evaluations."
 )
-plt.rcParams.update({"font.size": 14, "axes.labelsize": 20,
-                     "xtick.labelsize": 14, "ytick.labelsize": 14,
-                     "legend.fontsize": 13})
+plt.rcParams.update({"font.size": 16, "axes.labelsize": 16,
+                     "xtick.labelsize": 16, "ytick.labelsize": 16,
+                     "legend.fontsize": 16})
 
 
 # =============================================================================
@@ -505,7 +505,7 @@ def build_latex_pvalues(pc: pd.DataFrame) -> str:
         qi = qmap[(metric, pair, c)]
         if qi is None or (isinstance(qi, float) and np.isnan(qi)):
             return "--"
-        disp = (r"%.1e" % qi) if qi < 1e-3 else (r"%.3f" % qi)
+        disp = (r"$< 0.0001$") if qi < 1e-4 else (r"%.3f" % qi)
         return disp
 
     caption = (
@@ -538,7 +538,7 @@ def build_latex_pvalues(pc: pd.DataFrame) -> str:
 def build_figure(pc: pd.DataFrame) -> plt.Figure:
     methods = _methods_present(pc)
     palette = {m: PALETTE[m] for m in methods}
-    fig, axes = plt.subplots(1, 3, figsize=(13, 3.8))
+    fig, axes = plt.subplots(1, 3, figsize=(13, 5))
     for i, (metric, _title) in enumerate(SECTIONS):
         ax = axes[i]
         d = pc[pc.metric == metric]
@@ -564,7 +564,7 @@ def build_figure(pc: pd.DataFrame) -> plt.Figure:
             ax.set_ylabel("")
         ax.tick_params(axis="y", which="both", left=True, length=8, width=1.0, color="black")
         ax.tick_params(axis="x", which="both", bottom=True, length=4, width=1.0, color="black")
-        plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
+        plt.setp(ax.get_xticklabels(), rotation=20, ha="right")
 
         if metric in ("pial", "wm") and len(d):
             # Data-driven upper bound so Tricubic is not clipped; floor at 2.15

@@ -38,7 +38,6 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 import seaborn as sns
 from scipy.stats import wilcoxon
-
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
@@ -72,7 +71,7 @@ PAIRS = [("Photo-recon", "Tricubic"),
 # When True, the pairwise table prints the raw p-value and keys its significance
 # stars to the corrected q-value. Set False to star the raw p (no correction);
 # the caption text switches accordingly.
-APPLY_BH = True
+APPLY_BH = False
 
 # -----------------------------------------------------------------------------
 REFERENCE = "Photo-recon"
@@ -142,7 +141,8 @@ def load_uw(records: list) -> None:
     """UW cohort: three parallel subfolders sharing case-folder names."""
     sub_method = {
         "04_photo_recon_synthseg": "Photo-recon",
-        "04_bicubic_synthseg_rerun": "Tricubic",
+        # "04_bicubic_synthseg_rerun": "Tricubic",
+        "04_bicubic_synthseg": "Tricubic",
         "04_unet_synthseg": "Imputed",
     }
 
@@ -171,9 +171,13 @@ def load_uw(records: list) -> None:
 
 def load_madrc(records: list) -> None:
     """MADRC cohort: PR/Imputed from overlap txt, Tricubic from dice_*.json."""
+    # patterns = {
+    #     "Photo-recon": "best_recon_ss_qc_compute_overlap/*/*/photo_recon.orig.json",
+    #     "Imputed":     "best_recon_ss_qc_compute_overlap/*/*/photo_recon.machine_learning.json",
+    # }
     patterns = {
-        "Photo-recon": "best_recon_ss_qc_compute_overlap/*/*/photo_recon.orig.json",
-        "Imputed":     "best_recon_ss_qc_compute_overlap/*/*/photo_recon.machine_learning.json",
+        "Photo-recon": "best_recon_synthseg_rerun/*/*/photo_recon.orig_overlap.txt",
+        "Imputed":     "best_recon_synthseg_rerun/*/*/photo_recon.machine_learning_overlap.txt",
     }
     for method, pat in patterns.items():
         if method not in METHODS:
@@ -183,9 +187,10 @@ def load_madrc(records: list) -> None:
             _emit(records, case, method, "MADRC", _read_overlap(f))
 
     if "Tricubic" in METHODS and INCLUDE_TRICUBIC_MADRC:
-        for folder in glob.glob(os.path.join(MADRC_DIR, "04_bicubic_synthseg", "*")):
-        # for folder in glob.glob(os.path.join(MADRC_DIR, "04_bicubic_photosynthseg", "*")):
+        # for folder in glob.glob(os.path.join(MADRC_DIR, "04_bicubic_synthseg", "*")):
+        for folder in glob.glob(os.path.join(MADRC_DIR, "04_bicubic_photosynthseg", "*")):
             case = os.path.basename(folder)
+            # hits = glob.glob(os.path.join(folder, "seg_dice_reconany.json"))
             hits = glob.glob(os.path.join(folder, "dice_*.json"))
             if not hits:
                 continue
@@ -356,7 +361,7 @@ def build_pairwise_latex(df: pd.DataFrame) -> str:
             return "--"
         # s = stars(qmap[(cond, region, pair)])              # star by q (or raw p if APPLY_BH False)
         # suffix = (r"\sym{%s}" % s) if s else r"\blank"
-        return ("%.3f" % p) #+ suffix
+        return (r"$< 0.0001$") if p < 1e-4 else (r"%.3f" % p)
 
     if APPLY_BH:
         sig = (r"superscripts denote significance after Benjamini-Hochberg "

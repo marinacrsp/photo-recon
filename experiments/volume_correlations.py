@@ -1,31 +1,37 @@
 #!/usr/bin/env python3
 """
-Volume correlation analysis across segmentation methods with per-subject reference volumes.
+Joint volume-correlation analysis over BOTH cohorts:
 
-Loads subjects from separate method and reference directories:
-  - ref_dir/subject/seg_stats.txt                           (ground truth, no distance variants)
-  - photo_recon_dir/subject/seg_stats_{4mm,8mm,12mm}.txt
-  - tricubic_dir/subject/seg_stats_{4mm,8mm,12mm}.txt
-  - imputed_dir/subject/seg_stats_{4mm,8mm,12mm}.txt
+  * UW    - three slab distances (4/8/12 mm), flat layout:
+                <dir>/<subject>/seg_stats_{distance}.txt
+                reference: <ref_dir>/<subject>/seg_stats_{subject}.txt
+  * MADRC - one reconstruction per sample, glob layout:
+                ref:   <ref_dir>/<subject>/ * /seg_stats.txt
+                tri:   <tri_dir>/<subject>/seg_stats.txt
+                imp:   <imp_dir>/<subject>/ * /seg_stats_unet.txt
+                photo: <photo_dir>/<subject>/ * /seg_stats_photo_recon.txt
 
-Left and right hemisphere labels are collapsed to a single bilateral region by
-averaging their volumes (per subject, method, and distance) before analysis.
+Labels are selected by their original SegId numbering (allowlist LABEL_NAMES);
+left/right IDs sharing a name collapse to one bilateral region.
 
-The figure plots signed relative error (%) vs. log10(reference volume). Each point is
-one (subject, bilateral label, distance) observation; the Y-axis is shared across the
-three method subplots to enable direct visual comparison.
+Produces exactly two deliverables (the other diagnostic figures are omitted):
 
-Outputs:
-    * volume_correlations_figure.pdf / .svg
-    * volume_correlations_stats.csv
-    * volume_correlations_stats.tex
+  1. volume_correlations_joint.pdf / .svg
+     A 2 x 3 grid: rows = cohort (UW, MADRC), columns = method. Each panel is a
+     scatter of signed relative error (%) vs log10(reference volume), shared axes.
+
+  2. volume_error_table_joint.tex  (+ volume_error_stats_joint.csv)
+     One table*, sections MADRC / UW-4mm / UW-8mm / UW-12mm; rows = regions;
+     columns = per-method normalized error (mean over subjects, in [0,1]) plus
+     pairwise Wilcoxon signed-rank p-values (paired, on per-subject absolute
+     errors, computed per section and region).
 
 Usage:
-    python build_volume_correlations.py \\
-        --ref-dir /path/to/reference \\
-        --photo-recon-dir /path/to/Photo-recon \\
-        --tricubic-dir /path/to/Tricubic \\
-        --imputed-dir /path/to/Imputed \\
+    python build_volume_correlations_joint.py \\
+        --uw-ref-dir ...    --uw-photo-recon-dir ... \\
+        --uw-tricubic-dir ...  --uw-imputed-dir ... \\
+        --madrc-ref-dir ... --madrc-photo-recon-dir ... \\
+        --madrc-tricubic-dir ...  --madrc-imputed-dir ... \\
         --out-dir /path/to/output
 """
 
@@ -33,54 +39,99 @@ from __future__ import annotations
 
 import os
 import re
+import glob
 import argparse
+import itertools
 from pathlib import Path
-from matplotlib.patches import Patch
+from experiments.utils.summary_tables import build_summary_outputs
+
 import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.stats import wilcoxon
-
+from scipy.stats import linregress
+from experiments.utils.combine_hemispheres import process #as process_madrc
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-REF_DIR = None
-PHOTO_RECON_DIR = None
-TRICUBIC_DIR = None
-IMPUTED_DIR = None
 OUT_DIR = None
 
-METHODS = ["Photo-recon", "Tricubic", "Imputed"]
-METHOD_COLORS = {
-    "Photo-recon": "#BCA8A2",
-    "Tricubic":    "#7079CF",
-    "Imputed":     "#C8624C",
-}
-DISTANCES = ["4mm", "8mm", "12mm"]
-EXCLUDE_LABEL_PATTERNS = ["csf", "brainstem", "cerebellum", "ventraldc", "accumbens", "inf", "3rd"]
+Q_LEVEL=0.05
 
-DISTANCE_COLORS = {
-    "4mm":  "#1f77b4",   # blue
-    "8mm":  "#ff7f0e",   # orange
-    "12mm": "#2ca02c",   # green
+METHODS = ["Photo-recon", "Tricubic", "Imputed"]
+METHOD_DISPLAY = {
+    "Photo-recon": "3D reconstruction \n of slab photographs",
+    "Tricubic":    "Cubic",
+    "Imputed":     "Imputed",
 }
+METHOD_ABBR = {"Photo-recon": "PR", "Tricubic": "Cubic", "Imputed": "UNet"}
+
+DISTANCES   = ["12mm", "8mm", "4mm"]          # UW slab distances
+
+MADRC_LABEL = "MADRC"                          # Distance tag for the MADRC cohort
+SECTION_ORDER = [MADRC_LABEL] + DISTANCES      # table section order (MADRC first)
+SECTION_ORDER_TABLE = [MADRC_LABEL] + ["4mm", "8mm", "12mm"] 
+SECTION_HEADER = {
+    "MADRC": "MADRC", "4mm": "UW -- 4 mm", "8mm": "UW -- 8 mm", "12mm": "UW -- 12 mm",
+}
+APPLY_BH = False
+PANEL_LETTERS = ["(a)", "(b)", "(c)"]
+
+# Normalization scope: per (Distance/section, Label). MADRC is a single section,
+# so it is effectively per region there.
+NORMALIZE_BY = ["Label"]
+
+# Pairwise comparisons for the p-value columns. Default: all three pairs. To
+# report only the imputation-vs-baseline comparisons, set:
+#   PVALUE_PAIRS = [("Photo-recon","Imputed"), ("Tricubic","Imputed")]
+PVALUE_PAIRS = list(itertools.combinations(METHODS, 2))
+
+# Statistical test: "wilcoxon" (paired signed-rank) or "ranksum" (Mann-Whitney).
+TEST = "wilcoxon"
+SEG_FAILURE_RATIO = 0.0
+DISTANCE_COLORS = {"4mm": "#d2691e" , "8mm": "#e9967a", "12mm": "#ffcba4"}
+MADRC_COLOR = "#A894EE"
+
+POINT_ORDER = ["4mm", "8mm", "12mm"]   # exact label strings, in display order
+LINE_ORDER  = ["y = x", "LS Fit"]
+# --- LABEL SELECTION BY ORIGINAL SegId NUMBERING -----------------------------
+LABEL_NAMES = {
+    2: "WM", 3: "Cortex", 4: "Ventricle", 10: "Thalamus", 11: "Caudate",
+    12: "Putamen", 13: "Pallidum", 17: "Hippocampus", 18: "Amygdala",
+    41: "WM", 42: "Cortex", 43: "Ventricle", 49: "Thalamus", 50: "Caudate",
+    51: "Putamen", 52: "Pallidum", 53: "Hippocampus", 54: "Amygdala",
+}
+ALLOWED_SEGIDS = set(LABEL_NAMES)
+RENAME_TO_CANONICAL = True
 
 plt.rcParams.update({
-    "font.size": 14,
-    "axes.labelsize": 14,
-    "xtick.labelsize": 12,
-    "ytick.labelsize": 12,
-    "legend.fontsize": 11,
+    "font.size": 20, "axes.labelsize": 20,
+    "xtick.labelsize": 20, "ytick.labelsize": 20, "legend.fontsize": 20,
 })
 
+ERROR_CAPTION = (
+    r"Region-specific normalized volume error of automated segmentations of 3D "
+    r"reconstructions of photographs, for the MADRC and UW datasets."
+    r"Gold-standard volumes are obtained from MRI scans."
+)
 
+PVALUE_CAPTION = (
+    r"Pairwise statistical comparisons of the per-subject absolute volume errors "
+    r"between reconstruction methods, for the MADRC and UW datasets, by region and "
+    r"slab distance. P-values are from " +
+    ("Wilcoxon signed-rank (paired)" if TEST == "wilcoxon"
+     else "Wilcoxon rank-sum (Mann-Whitney)") +
+    r" tests. Dashes indicate comparisons without paired samples. "
+    r"Abbreviations: PR = Photo-recon, Cub = cubic interpolation, "
+    r"UNet = U-Net imputation."
+)
 # =============================================================================
 # DATA LOADING
 # =============================================================================
 def read_segstats(stats_file: str) -> pd.DataFrame:
-    """Read a segmentation statistics file (format: SegId NVoxels Volume_mm3 Label)."""
+    """Read a segmentation statistics file (columns: * SegId NVoxels Volume_mm3 Label)."""
     rows = []
     try:
         with open(stats_file) as f:
@@ -91,12 +142,8 @@ def read_segstats(stats_file: str) -> pd.DataFrame:
                 if len(parts) != 5:
                     continue
                 try:
-                    rows.append({
-                        "SegId":      int(parts[1]),
-                        "NVoxels":    int(parts[2]),
-                        "Volume_mm3": float(parts[3]),
-                        "Label":      parts[4],
-                    })
+                    rows.append({"SegId": int(parts[1]), "NVoxels": int(parts[2]),
+                                 "Volume_mm3": float(parts[3]), "Label": parts[4]})
                 except (ValueError, IndexError):
                     continue
     except FileNotFoundError:
@@ -104,103 +151,140 @@ def read_segstats(stats_file: str) -> pd.DataFrame:
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
-def load_all_subjects() -> tuple:
-    """
-    Load all subjects from separate method and reference directories.
+def _first_glob(pattern: str):
+    matches = sorted(glob.glob(pattern))
+    return matches[0] if matches else None
 
-    Returns:
-        df     – Subject, Method, Distance, Label, Volume_mm3  (predictions)
-        ref_df – Subject, Label, Volume_mm3                    (per-subject ground truth)
-    """
+
+def load_uw_subjects(ref_dir, photo_dir, tri_dir, imp_dir) -> tuple:
+    """UW: flat layout, three slab distances per subject per method."""
     records, ref_records = [], []
-
-    if not os.path.isdir(REF_DIR):
-        raise FileNotFoundError(f"Reference directory not found: {REF_DIR}")
-
-    subjects = sorted(
-        d for d in os.listdir(REF_DIR)
-        if os.path.isdir(os.path.join(REF_DIR, d))
-    )
-    print(f"Found {len(subjects)} subject(s)")
+    if not os.path.isdir(ref_dir):
+        raise FileNotFoundError(f"UW reference directory not found: {ref_dir}")
+    subjects = sorted(d for d in os.listdir(ref_dir)
+                      if os.path.isdir(os.path.join(ref_dir, d)))
+    print(f"[UW] Found {len(subjects)} subject(s)")
 
     for subject in subjects:
-        ref_file = os.path.join(REF_DIR, subject, f"seg_stats_{subject}.txt")
-        for _, row in read_segstats(ref_file).iterrows():
-            ref_records.append({
-                "Subject":    subject,
-                "Label":      row["Label"],
-                "Volume_mm3": float(row["Volume_mm3"]),
-            })
+        ref_file = os.path.join(ref_dir, subject, f"seg_stats_{subject}.txt")
+        for _, r in read_segstats(ref_file).iterrows():
+            ref_records.append({"Subject": subject, "SegId": int(r["SegId"]),
+                                "Label": r["Label"], "Volume_mm3": float(r["Volume_mm3"])})
 
-    method_dirs = {
-        "Photo-recon": PHOTO_RECON_DIR,
-        "Tricubic":    TRICUBIC_DIR,
-        "Imputed":     IMPUTED_DIR,
-    }
-    for method, method_dir in method_dirs.items():
-        if not os.path.isdir(method_dir):
-            print(f"Warning: {method} directory not found: {method_dir}")
+    method_dirs = {"Photo-recon": photo_dir, "Tricubic": tri_dir, "Imputed": imp_dir}
+    for method, mdir in method_dirs.items():
+        if not os.path.isdir(mdir):
+            print(f"[UW] Warning: {method} directory not found: {mdir}")
             continue
         for subject in subjects:
-            subject_path = os.path.join(method_dir, subject)
-            if not os.path.isdir(subject_path):
+            spath = os.path.join(mdir, subject)
+            if not os.path.isdir(spath):
                 continue
             for distance in DISTANCES:
-                stats_file = os.path.join(subject_path, f"seg_stats_{distance}.txt")
-                for _, row in read_segstats(stats_file).iterrows():
-                    records.append({
-                        "Subject":    subject,
-                        "Method":     method,
-                        "Distance":   distance,
-                        "Label":      row["Label"],
-                        "Volume_mm3": float(row["Volume_mm3"]),
-                    })
+                sf = os.path.join(spath, f"seg_stats_{distance}.txt")
+                for _, r in read_segstats(sf).iterrows():
+                    records.append({"Subject": subject, "Method": method,
+                                    "Distance": distance, "SegId": int(r["SegId"]),
+                                    "Label": r["Label"], "Volume_mm3": float(r["Volume_mm3"])})
 
-    df     = pd.DataFrame.from_records(records)
-    ref_df = pd.DataFrame.from_records(ref_records)
-    if df.empty:
-        raise RuntimeError("No prediction records loaded.")
-    if ref_df.empty:
-        raise RuntimeError("No reference volumes loaded.")
+    df, ref_df = pd.DataFrame.from_records(records), pd.DataFrame.from_records(ref_records)
+    if df.empty or ref_df.empty:
+        raise RuntimeError("UW: no records loaded; check the UW paths.")
+    return df, ref_df
+
+
+def load_madrc_subjects(ref_dir, photo_dir, tri_dir, imp_dir) -> tuple:
+    """MADRC: glob layout, one file per subject per method, no slab distances."""
+    records, ref_records = [], []
+    if not os.path.isdir(ref_dir):
+        raise FileNotFoundError(f"MADRC reference directory not found: {ref_dir}")
+    subjects = sorted(d for d in os.listdir(ref_dir)
+                      if os.path.isdir(os.path.join(ref_dir, d)))
+    print(f"[MADRC] Found {len(subjects)} subject(s)")
+
+    for subject in subjects:
+        ref_file = _first_glob(os.path.join(ref_dir, subject, "*", "seg_stats.txt"))
+        if ref_file is None:
+            print(f"[MADRC] [ref] no seg_stats.txt for {subject}, skipping")
+            continue
+        for _, r in read_segstats(ref_file).iterrows():
+            ref_records.append({"Subject": subject, "SegId": int(r["SegId"]),
+                                "Label": r["Label"], "Volume_mm3": float(r["Volume_mm3"])})
+
+    method_dirs = {"Photo-recon": photo_dir, "Tricubic": tri_dir, "Imputed": imp_dir}
+    for method, mdir in method_dirs.items():
+        if not os.path.isdir(mdir):
+            print(f"[MADRC] Warning: {method} directory not found: {mdir}")
+            continue
+        for subject in subjects:
+            spath = os.path.join(mdir, subject)
+            if not os.path.isdir(spath):
+                continue
+            if method == "Tricubic":
+                pattern = os.path.join(spath, "seg_stats_reconany_presurf.txt")
+            elif method == "Imputed":
+                pattern = os.path.join(spath, "seg_stats_imputation_reconany_presurf.txt")
+            else:  # Photo-recon
+                pattern = os.path.join(spath, "seg_stats_photo_reconany_presurf.txt")
+            sf = _first_glob(pattern)
+            if sf is None:
+                print(f"[MADRC] [{method}] no stats for {subject}, skipping")
+                continue
+            for _, r in read_segstats(sf).iterrows():
+                records.append({"Subject": subject, "Method": method,
+                                "Distance": MADRC_LABEL, "SegId": int(r["SegId"]),
+                                "Label": r["Label"], "Volume_mm3": float(r["Volume_mm3"])})
+
+    df, ref_df = pd.DataFrame.from_records(records), pd.DataFrame.from_records(ref_records)
+    if df.empty or ref_df.empty:
+        raise RuntimeError("MADRC: no records loaded; check the MADRC paths.")
     return df, ref_df
 
 
 # =============================================================================
-# HEMISPHERE COMBINING
+# FILTERING / HEMISPHERE COMBINING / MERGE
 # =============================================================================
+def drop_segmentation_failures(m, thresh=SEG_FAILURE_RATIO):
+    ratio = m["Volume_mm3"] / m["Ref_mm3"]
+    keep = ratio >= thresh
+    dropped = (~keep).sum()
+    if dropped:
+        print(f"[seg-failure filter] dropped {dropped} of {len(m)} rows "
+              f"(ratio < {thresh}):")
+        print(m.loc[~keep, ["Subject", "Method", "Distance", "Label",
+                            "Volume_mm3", "Ref_mm3"]].to_string(index=False))
+    return m[keep].copy()
+
+def apply_label_whitelist(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    if "SegId" not in df.columns:
+        raise KeyError("apply_label_whitelist requires a 'SegId' column.")
+    out = df[df["SegId"].isin(ALLOWED_SEGIDS)].copy()
+    if RENAME_TO_CANONICAL:
+        out["Label"] = out["SegId"].map(LABEL_NAMES)
+    return out
+
+
 def normalize_label(label: str) -> str:
-    """
-    Strip hemisphere markers to obtain a bilateral base label.
-    Handles prefix/suffix/infix Left/Right/lh/rh in any separator convention.
-    Midline structures (no marker) are returned unchanged.
-    """
     s = label.strip()
-    # infix: ctx-lh-X or wm-rh-X
     s = re.sub(r"(^|[-_ ])(lh|rh)([-_ ])", r"\1", s, flags=re.IGNORECASE)
-    # prefix: Left-X, Right_X, lh-X, rh X …
     s = re.sub(r"^(left|right|lh|rh)[-_ ]", "", s, flags=re.IGNORECASE)
-    # suffix: X Left, X-Right, X_rh …
     s = re.sub(r"[-_ ](left|right|lh|rh)$", "", s, flags=re.IGNORECASE)
     return s.strip("-_ ")
 
 
 def combine_hemispheres(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Collapse left/right labels by averaging volumes within each
-    (Subject, Method, Distance). Groupby guarantees no duplicate labels.
-    """
+    """Average left/right within (Subject, Method, Distance)."""
     if df.empty:
         return df
     out = df.copy()
     out["Label"] = out["Label"].map(normalize_label)
-    return (
-        out.groupby(["Subject", "Method", "Distance", "Label"], as_index=False)
-        ["Volume_mm3"].mean()
-    )
+    return (out.groupby(["Subject", "Method", "Distance", "Label"], as_index=False)
+              ["Volume_mm3"].mean())
 
 
 def combine_reference_hemispheres(ref_df: pd.DataFrame) -> pd.DataFrame:
-    """Collapse left/right reference labels by averaging within each Subject."""
     if ref_df.empty:
         return ref_df
     out = ref_df.copy()
@@ -208,529 +292,626 @@ def combine_reference_hemispheres(ref_df: pd.DataFrame) -> pd.DataFrame:
     return out.groupby(["Subject", "Label"], as_index=False)["Volume_mm3"].mean()
 
 
-# =============================================================================
-# STATISTICS
-# =============================================================================
-def pearson_r(x: np.ndarray, y: np.ndarray) -> float:
-    if len(x) < 2:
-        return np.nan
-    try:
-        return float(np.corrcoef(x, y)[0, 1])
-    except Exception:
-        return np.nan
+def merge_with_ref(df: pd.DataFrame, ref_df: pd.DataFrame) -> pd.DataFrame:
+    """Per-observation frame with Distance, Diff = V_method - V_ref, and Ref_mm3."""
+    ref_long = ref_df.rename(columns={"Volume_mm3": "Ref_mm3"})[["Subject", "Label", "Ref_mm3"]]
+    m = df.merge(ref_long, on=["Subject", "Label"], how="inner")
+    m = m[(m["Ref_mm3"] > 0) & (m["Volume_mm3"] > 0)].copy()
+    m["Diff"] = m["Volume_mm3"] - m["Ref_mm3"]
+    return m
 
 
-def label_mean_volume(df: pd.DataFrame, method: str,
-                      distance: str, label: str) -> float:
-    v = df[(df["Method"]   == method)   &
-           (df["Distance"] == distance) &
-           (df["Label"]    == label)]["Volume_mm3"]
-    return float(v.mean()) if len(v) > 0 else np.nan
+# def process(df: pd.DataFrame, ref_df: pd.DataFrame, tag: str) -> pd.DataFrame:
+#     df = apply_label_whitelist(df)
+#     ref_df = apply_label_whitelist(ref_df)
+#     if df.empty or ref_df.empty:
+#         raise RuntimeError(f"All {tag} rows removed by the SegId allowlist.")
+#     df = combine_hemispheres(df)
+#     ref_df = combine_reference_hemispheres(ref_df)
+#     return merge_with_ref(df, ref_df)
 
+def _pearson(x, y):
+    """Pearson correlation coefficient."""
+    x = np.asarray(x, float); y = np.asarray(y, float)
+    fit = linregress(x, y)
 
-def label_std_volume(df: pd.DataFrame, method: str,
-                     distance: str, label: str) -> float:
-    v = df[(df["Method"]   == method)   &
-           (df["Distance"] == distance) &
-           (df["Label"]    == label)]["Volume_mm3"]
-    return float(v.std()) if len(v) > 1 else np.nan
+    a = fit.intercept
+    b = fit.slope
+    r = fit.rvalue
+    p = fit.pvalue
+    return a, b, r, p
 
-
-def label_n_subjects(df: pd.DataFrame, method: str,
-                     distance: str, label: str) -> int:
-    return int(df[(df["Method"]   == method)   &
-                  (df["Distance"] == distance) &
-                  (df["Label"]    == label)]["Subject"].nunique())
-
-
-# =============================================================================
-# FIGURE  –  Option 1: signed relative error vs. log10(reference volume)
-# =============================================================================
-def make_figure(df: pd.DataFrame, ref_df: pd.DataFrame) -> plt.Figure:
+def make_concordance_figure(m_uw: pd.DataFrame, m_mad: pd.DataFrame) -> plt.Figure:
     """
-    Three subplots (one per method), shared Y-axis.
+    Per-cohort, per-method concordance of measured vs reference volume on log-log
+    axes, with identity line, LS fit, and +/-1.96*residual-SD prediction band.
 
-    X-axis : log10(reference volume [mm³])
-    Y-axis : signed relative error (%) = (V_method - V_ref) / V_ref * 100
-
-    Each point is one (subject, bilateral label, distance) observation.
-    Points are colored by slab distance. A horizontal line at y = 0 marks
-    perfect agreement. The inset reports mean bias (%) and the 95 % limits
-    of agreement (mean ± 1.96 SD, Bland-Altman convention).
+    For UW, r and SD_r are computed and displayed separately for each distance.
+    For MADRC, r and SD_r are computed over the complete cohort.
     """
-    ref_long = ref_df.rename(columns={"Volume_mm3": "Ref_mm3"})[
-        ["Subject", "Label", "Ref_mm3"]
-    ]
+    rows = [("UW", m_uw, True), ("MADRC", m_mad, False)]
 
-    # First pass: collect all relative errors across methods to fix a shared Y range.
-    all_errors = []
-    merged_cache = {}
-    for method in METHODS:
-        m = df[df["Method"] == method].merge(ref_long, on=["Subject", "Label"], how="inner")
-        m = m[(m["Ref_mm3"] > 0) & (m["Volume_mm3"] > 0)].copy()
-        m["RelErr"] = (m["Volume_mm3"] - m["Ref_mm3"]) / m["Ref_mm3"] * 100.0
-        merged_cache[method] = m
-        all_errors.extend(m["RelErr"].tolist())
+    allv = []
+    for _, mm, _ in rows:
+        if not mm.empty:
+            allv += np.log10(mm["Ref_mm3"]).tolist()
+            allv += np.log10(mm["Volume_mm3"]).tolist()
 
-    # Shared Y limits: clip to 5th–95th percentile of the pooled error distribution
-    # then widen by 10 % to give breathing room.
-    if all_errors:
-        lo_pct = np.percentile(all_errors, 2)
-        hi_pct = np.percentile(all_errors, 98)
-        margin  = (hi_pct - lo_pct) * 0.10
-        y_lo    = lo_pct - margin
-        y_hi    = hi_pct + margin
-    else:
-        y_lo, y_hi = -50, 50
+    lo, hi = (min(allv), max(allv)) if allv else (2.0, 5.5)
+    pad = (hi - lo) * 0.05
+    lo -= pad
+    hi += pad
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5.5), sharey=True)
-
-    for ax, method in zip(axes, METHODS):
-        m = merged_cache[method]
-
-        # Scatter one series per distance.
-        for distance in DISTANCES:
-            d = m[m["Distance"] == distance]
-            if d.empty:
-                continue
-            ax.scatter(
-                np.log10(d["Ref_mm3"].to_numpy()),
-                d["RelErr"].to_numpy(),
-                s=18, alpha=0.55,
-                color=DISTANCE_COLORS.get(distance, "#7f7f7f"),
-                edgecolors="none",
-                label=distance,
-                zorder=2,
-            )
-
-        # Horizontal reference line at 0 % error.
-        ax.axhline(0, color="black", linewidth=1.0, linestyle="--",
-                   alpha=0.6, label="Zero error", zorder=1)
-
-        # X-axis limits.
-        if not m.empty:
-            x_vals = np.log10(m["Ref_mm3"].to_numpy())
-            x_margin = (x_vals.max() - x_vals.min()) * 0.04
-            ax.set_xlim(x_vals.min() - x_margin, x_vals.max() + x_margin)
-
-        # Per-distance mean bias lines (thin horizontal dashes, same color).
-        for distance in DISTANCES:
-            d = m[m["Distance"] == distance]
-            if len(d) < 2:
-                continue
-            bias = d["RelErr"].mean()
-            ax.axhline(bias, color=DISTANCE_COLORS[distance],
-                       linewidth=1.2, linestyle=":", alpha=0.8, zorder=1)
-
-        # Inset statistics: pooled mean bias and 95 % LoA.
-        if not m.empty:
-            bias_all = m["RelErr"].mean()
-            sd_all   = m["RelErr"].std()
-            loa_lo   = bias_all - 1.96 * sd_all
-            loa_hi   = bias_all + 1.96 * sd_all
-            stats_txt = (
-                f"Bias = {bias_all:+.1f} %\n"
-                f"LoA  [{loa_lo:+.1f}, {loa_hi:+.1f}] %\n"
-                # f"n = {len(m)}"
-            )
-            ax.text(
-                0.03, 0.97, stats_txt,
-                transform=ax.transAxes,
-                fontsize=10, verticalalignment="top", family="monospace",
-                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.85),
-            )
-
-        ax.set_ylim(y_lo, y_hi)
-        ax.set_xlabel("Reference volume [mm³, log₁₀]", fontsize=12, fontweight="bold")
-        ax.set_title(method, fontsize=13, fontweight="bold", pad=6)
-        ax.grid(True, alpha=0.25, linestyle=":", which="both")
-        ax.legend(fontsize=10, loc="lower right",
-                  title="Distance", title_fontsize=10)
-
-    axes[0].set_ylabel("Relative volume error (%)", fontsize=12, fontweight="bold")
-
-    fig.suptitle(
-        "Signed relative volume error vs. reference (bilateral label averages)",
-        fontsize=13, y=1.01,
+    fig, axes = plt.subplots(
+        2, 3,
+        figsize=(18, 12),
+        sharex=True,
+        sharey=True
     )
-    plt.tight_layout()
+    known = POINT_ORDER + LINE_ORDER
+    seen = {}
+    for r, (coh, mm, by_dist) in enumerate(rows):
+
+        for c, method in enumerate(METHODS):
+            ax = axes[r, c]
+
+            # ---------------------------------------------------------
+            # Identity line
+            # ---------------------------------------------------------
+            ax.plot(
+                [lo, hi], [lo, hi],
+                ls="--",
+                color="black",
+                lw=1.4,
+                alpha=0.6,
+                zorder=1,
+                label="y = x"
+            )
+
+            sub = mm[mm["Method"] == method]
+
+            if not sub.empty:
+
+                # =====================================================
+                # UW: calculate metrics separately for each distance
+                # =====================================================
+                if by_dist:
+
+                    for dist in DISTANCES:
+
+                        dd = sub[sub["Distance"] == dist]
+
+                        if dd.empty:
+                            continue
+
+                        x = np.log10(dd["Ref_mm3"].to_numpy())
+                        y = np.log10(dd["Volume_mm3"].to_numpy())
+
+                        # Scatter points
+                        ax.scatter(
+                            x,
+                            y,
+                            s=36,
+                            alpha=0.55,
+                            color=DISTANCE_COLORS.get(
+                                dist,
+                                "#7f7f7f"
+                            ),
+                            edgecolors="none",
+                            label=dist,
+                            zorder=3
+                        )
+
+                        # -------------------------------------------------
+                        # Per-distance Pearson correlation
+                        # -------------------------------------------------
+                        a, b, r_val, p = _pearson(x, y)
+
+                        if np.isfinite(b):
+
+                            xg = np.linspace(lo, hi, 100)
+                            yg = a + b * x
+
+                            # Residuals for THIS distance
+                            resid = y - (a + b * x)
+
+                            rsd = (
+                                np.std(resid, ddof=2)
+                                if len(resid) > 2
+                                else np.nan
+                            )
+
+                            # LS fit for THIS distance
+                            ax.plot(
+                                xg,
+                                a + b * xg,
+                                color=DISTANCE_COLORS.get(
+                                    dist,
+                                    "#7f7f7f"
+                                ),
+                                lw=1.6,
+                                alpha=0.8,
+                                zorder=4
+                            )
+
+                            # Prediction band for THIS distance
+                            if np.isfinite(rsd):
+                                ax.fill_between(
+                                    xg,
+                                    a + b * xg - 1.96 * rsd,
+                                    a + b * xg + 1.96 * rsd,
+                                    color=DISTANCE_COLORS.get(
+                                        dist,
+                                        "#7f7f7f"
+                                    ),
+                                    alpha=0.08,
+                                    zorder=2
+                                )
+
+                            # -------------------------------------------------
+                            # Per-distance metric annotation
+                            # -------------------------------------------------
+                            ax.text(
+                                0.05,
+                                0.95 - 0.06 * DISTANCES.index(dist),
+                                f"{dist}: r = {r_val:.2f}, "
+                                f"SD$_r$ = {rsd:.2f}",
+                                transform=ax.transAxes,
+                                fontsize=16,
+                                va="top",
+                                color= "#333333"
+                            )
+
+                # =====================================================
+                # MADRC: calculate metrics over the whole cohort
+                # =====================================================
+                else:
+
+                    x = np.log10(sub["Ref_mm3"].to_numpy())
+                    y = np.log10(sub["Volume_mm3"].to_numpy())
+
+                    # Scatter
+                    ax.scatter(
+                        x,
+                        y,
+                        s=36,
+                        alpha=0.55,
+                        color=MADRC_COLOR,
+                        edgecolors="none",
+                        zorder=3
+                    )
+
+                    a, b, r_val, p = _pearson(x, y)
+
+                    if np.isfinite(b):
+
+                        xg = np.linspace(lo, hi, 100)
+                        yg = a + b * xg
+
+                        resid = y - (a + b * x)
+                        rsd = (
+                            np.std(resid, ddof=2)
+                            if len(resid) > 2
+                            else np.nan
+                        )
+
+                        # LS fit
+                        ax.plot(
+                            xg,
+                            yg,
+                            color="#463F61",
+                            lw=1.6,
+                            zorder=4,
+                            label="LS Fit"
+                        )
+
+                        # Prediction band
+                        if np.isfinite(rsd):
+                            ax.fill_between(
+                                xg,
+                                yg - 1.96 * rsd,
+                                yg + 1.96 * rsd,
+                                color="#dbd7d2",
+                                alpha=0.2,
+                                zorder=2
+                            )
+
+                        # MADRC metric annotation
+                        ax.text(
+                            0.05,
+                            0.95 - 0.06 * DISTANCES.index(dist),
+                            f"r = {r_val:.2f}, SD$_r$ = {rsd:.2f}",
+                            transform=ax.transAxes,
+                            fontsize=16,
+                            va="top"
+                        )
+
+            # ---------------------------------------------------------
+            # Axis formatting
+            # ---------------------------------------------------------
+            ax.set_xlim(lo, hi)
+            ax.set_ylim(lo, hi)
+            ax.set_aspect("equal", adjustable="box")
+            ax.grid(True, alpha=0.25, ls=":", which="both")
+
+            if r == 0 :
+                ax.set_title(
+                    f"{PANEL_LETTERS[c]} {METHOD_DISPLAY[method]}",
+                    fontsize=20,
+                    pad=8
+                )
+
+            if c == 0:
+                ax.set_ylabel(
+                    f"{coh}\nPred. volume [mm$^3$ log10]",
+                    fontsize=20
+                )
+
+            if r == 1:
+                ax.set_xlabel(
+                    "Ref. volume [mm$^3$ log10]",
+                    fontsize=20
+                )
+
+            handles, labels = axes[0, -1].get_legend_handles_labels()
+
+            for h, l in zip(handles, labels):
+                seen.setdefault(l, h)
+
+            ordered_labels = [l for l in known if l in seen]
+            ordered_labels += [l for l in seen if l not in known]
+
+            ordered_handles = [seen[l] for l in ordered_labels]
+
+    # -------------------------------------------------------------
+    # Legend
+    # -------------------------------------------------------------
+    axes[0, -1].legend(
+        ordered_handles,
+        ordered_labels,
+        fontsize=17,
+        loc="lower right",
+        title_fontsize=17,
+        handlelength=1.2,
+        handletextpad=0.5
+    )
+
+    fig.subplots_adjust(
+        wspace=0.02,
+        hspace=0.08,
+        left=0.11
+    )
+
     return fig
 
+# =============================================================================
+# NORMALIZED ERROR + P-VALUES
+# =============================================================================
+def valid_m(pvals) -> int:
+    """Tests actually performed (non-NaN) in a family."""
+    p = np.asarray(pvals, dtype=float)
+    return int(np.count_nonzero(~np.isnan(p)))
+
+
+def benjamini_hochberg(pvals) -> np.ndarray:
+    """BH-adjusted q-values; preserves NaNs and input order."""
+    p = np.asarray(pvals, dtype=float)
+    q = np.full_like(p, np.nan)
+    idx = np.where(~np.isnan(p))[0]
+    m = idx.size
+    if m == 0:
+        return q
+    order = idx[np.argsort(p[idx])]
+    adj = p[order] * m / np.arange(1, m + 1)
+    adj = np.minimum.accumulate(adj[::-1])[::-1]           # monotone from the top
+    q[order] = np.clip(adj, 0.0, 1.0)
+    return q
+
+
+def collect_pvalue_family(m, labels):
+    """Collect raw p over the whole table (sections x regions x pairs) in a
+    fixed order, then BH-adjust once. Shared by the table and the CSV so both
+    report identical numbers."""
+    present = [s for s in SECTION_ORDER_TABLE if s in set(m["Distance"])]
+    keys, raw = [], []
+    for sec in present:
+        for lab in labels:
+            for a, b in PVALUE_PAIRS:
+                keys.append((sec, lab, (a, b)))
+                raw.append(pvalue(m, sec, lab, a, b))
+    m_valid = valid_m(raw)
+    q = benjamini_hochberg(raw) if APPLY_BH else raw
+    return present, keys, dict(zip(keys, raw)), dict(zip(keys, q)), m_valid
+
+def aggregate(m: pd.DataFrame) -> pd.DataFrame:
+    return (m.groupby(["Label", "Method", "Distance"])
+              .agg(norm_err_mean=("RelErr", "mean"),
+                   norm_err_std=("RelErr", "std"),
+                   n=("Subject", "nunique"))
+              .reset_index())
+
+
+def pvalue(m: pd.DataFrame, distance: str, label: str,
+           method_a: str, method_b: str) -> float:
+    """Paired test on per-subject absolute errors for one (section, region).
+    Returns the RAW p-value; BH correction is applied once per table."""
+    sel = (m["Distance"] == distance) & (m["Label"] == label)
+    a = m[sel & (m["Method"] == method_a)][["Subject", "AbsErr"]]
+    b = m[sel & (m["Method"] == method_b)][["Subject", "AbsErr"]]
+    merged = a.merge(b, on="Subject", suffixes=("_a", "_b"))
+    if len(merged) < 1:
+        return np.nan
+    try:
+        if TEST == "ranksum":
+            from scipy.stats import ranksums
+            _, p = ranksums(merged["AbsErr_a"], merged["AbsErr_b"])
+        else:
+            _, p = wilcoxon(merged["AbsErr_a"], merged["AbsErr_b"])
+        return p
+    except ValueError:
+        return np.nan
+
+
+def _fmt_p(p: float) -> str:
+    if p is None or (isinstance(p, float) and np.isnan(p)):
+        return "--"
+    return f"{p:.3f}"
+
+
+def ordered_labels(agg: pd.DataFrame) -> list:
+    return sorted(set(agg["Label"]), key=str.lower)
+
 
 # =============================================================================
-# AUDIT TABLE (CSV)
+# JOINT TABLE
 # =============================================================================
-def write_audit(df: pd.DataFrame, ref_vols_by_label: dict) -> str:
-    rows = []
-    for label in sorted(df["Label"].unique()):
-        ref_vol = ref_vols_by_label.get(label, np.nan)
-        for distance in DISTANCES:
-            row = {"Label": label, "Distance": distance, "Reference_mm3": ref_vol}
+JOINT_CAPTION = (
+    r"Region-specific normalized volume error of automated segmentations of 3D "
+    r"reconstructions of photographs, for the MADRC and UW cohorts. For each "
+    r"region, the error $|V_{\mathrm{method}} - V_{\mathrm{ref}}|$ is divided by "
+    r"the maximum absolute error for that region across all methods, subjects, "
+    r"cohorts and slab distances, so values lie in $[0, 1]$; each cell is the "
+    r"mean over subjects. Because a single per-region denominator is shared "
+    r"across slab distances, the normalized error increases with slab thickness. "
+    r"P-values are from Wilcoxon signed-rank tests (paired) on the per-subject "
+    r"absolute errors. Abbreviations: PR = Photo-recon, Cub = cubic "
+    r"interpolation, UNet = U-Net imputation. Gold-standard volumes are obtained "
+    r"from MRI scans."
+)
+
+
+def build_error_latex(agg, labels):
+    """Table 1: per-method normalized error only."""
+    present = [s for s in SECTION_ORDER_TABLE if s in set(agg["Distance"])]
+    ncol = 1 + len(METHODS)
+    header = (r"\textbf{Region}"
+              + "".join(r" & \textbf{%s}" % METHOD_DISPLAY[m_] for m_ in METHODS)
+              + r" \\")
+    L = [r"\begin{table*}[h!]", r"\centering", r"\caption{%s}" % ERROR_CAPTION,
+         r"\label{app:volume_error_joint}",
+         r"\begin{tabular}{l%s}" % ("c" * len(METHODS)), r"\toprule"]
+    for si, sec in enumerate(present):
+        L.append(r"\multicolumn{%d}{c}{\textbf{%s}} \\" % (ncol, SECTION_HEADER[sec]))
+        L.append(r"\midrule")
+        if si == 0:
+            L.append(header)
+        d = agg[agg["Distance"] == sec]
+        for lab in labels:
+            cells = []
             for method in METHODS:
-                row[f"{method}_mean_mm3"] = label_mean_volume(df, method, distance, label)
-                row[f"{method}_std_mm3"]  = label_std_volume(df, method, distance, label)
-                row[f"{method}_n"]        = label_n_subjects(df, method, distance, label)
+                v = d[(d["Label"] == lab) & (d["Method"] == method)]["norm_err_mean"]
+                cells.append(f"{float(v.iloc[0]):.3f}" if len(v) else "--")
+            L.append("%-16s & %s \\\\" % (lab, " & ".join(cells)))
+        L.append(r"\bottomrule" if si == len(present) - 1 else r"\midrule")
+    L += [r"\end{tabular}", r"\end{table*}"]
+    return "\n".join(L)
+
+def build_pvalue_latex(m, labels):
+    """Pairwise comparisons, Benjamini-Hochberg (FDR) corrected across the whole table."""
+    present, keys, pmap, qmap, m_valid = collect_pvalue_family(m, labels)
+    print(f"[volume] BH-FDR over m = {m_valid} valid tests (bold at q < {Q_LEVEL})")
+
+    def cell(sec, lab, pair):
+        qi = qmap.get((sec, lab, pair), np.nan)
+        if qi is None or (isinstance(qi, float) and np.isnan(qi)):
+            return "--"
+        disp = (r"$< 0.0001$") if qi < 1e-4 else (r"%.3f" % qi)
+        return disp
+
+    caption = (
+        r"Pairwise statistical comparisons of the per-subject absolute volume "
+        r"errors between reconstruction methods, for the MADRC and UW datasets, "
+        r"by region and slab distance (" +
+        ("Wilcoxon signed-rank, paired" if TEST == "wilcoxon"
+         else "Wilcoxon rank-sum, Mann-Whitney") +
+        r"). Reported values are Benjamini-Hochberg adjusted $q$-values "
+        r"controlling the false discovery rate across the $m=%d$ comparisons in "
+        r"this table; entries with $q<0.05$ are shown in bold. Dashes indicate "
+        r"comparisons without paired samples. Abbreviations: PR = Photo-recon, "
+        r"Cub = cubic interpolation, UNet = U-Net imputation." % m_valid
+    )
+    ncol = 1 + len(PVALUE_PAIRS)
+    header = (r"\textbf{Region}"
+              + "".join(r" & \textbf{q (%s vs %s)}" % (METHOD_ABBR[a], METHOD_ABBR[b])
+                        for a, b in PVALUE_PAIRS) + r" \\")
+    L = [r"\begin{table*}[h!]", r"\centering", r"\caption{%s}" % caption,
+         r"\label{app:volume_pvalues_joint}",
+         r"\begin{tabular}{l%s}" % ("c" * len(PVALUE_PAIRS)), r"\toprule"]
+    for si, sec in enumerate(present):
+        L.append(r"\multicolumn{%d}{c}{\textbf{%s}} \\" % (ncol, SECTION_HEADER[sec]))
+        L.append(r"\midrule")
+        if si == 0:
+            L.append(header)
+        for lab in labels:
+            cells = [cell(sec, lab, (a, b)) for a, b in PVALUE_PAIRS]
+            L.append("%-16s & %s \\\\" % (lab, " & ".join(cells)))
+        L.append(r"\bottomrule" if si == len(present) - 1 else r"\midrule")
+    L += [r"\end{tabular}", r"\end{table*}"]
+    return "\n".join(L)
+
+def write_joint_csv(agg: pd.DataFrame, m: pd.DataFrame, labels: list) -> str:
+    present = [s for s in SECTION_ORDER if s in set(agg["Distance"])]
+    rows = []
+    for sec in present:
+        d = agg[agg["Distance"] == sec]
+        for lab in labels:
+            row = {"Section": SECTION_HEADER[sec], "Distance": sec, "Region": lab}
+            for method in METHODS:
+                r = d[(d["Label"] == lab) & (d["Method"] == method)]
+                row[f"{method}_norm_err"] = float(r["norm_err_mean"].iloc[0]) if len(r) else np.nan
+                row[f"{method}_norm_err_std"] = float(r["norm_err_std"].iloc[0]) if len(r) else np.nan
+                row[f"{method}_n"] = int(r["n"].iloc[0]) if len(r) else 0
+            for a, b in PVALUE_PAIRS:
+                p = pvalue(m, sec, lab, a, b)
+                if p < 1e-3:
+                    write_p =  (r"$< 0.001$") 
+                else:
+                    write_p = (r"%.3f" % p)
+                row[f"p_{METHOD_ABBR[a]}_vs_{METHOD_ABBR[b]}"] = write_p
             rows.append(row)
-    path = os.path.join(OUT_DIR, "volume_correlations_stats.csv")
+    path = os.path.join(OUT_DIR, "volume_error_stats_joint.csv")
     pd.DataFrame(rows).to_csv(path, index=False, encoding="utf-8-sig")
     return path
 
 # =============================================================================
-# LABEL EXCLUSION
+# JOINT FIGURE (2 rows: cohort; 3 columns: method)
 # =============================================================================
-def _squash_label(label: str) -> str:
-    """Lowercase and remove separators/spaces for robust label matching."""
-    return re.sub(r"[^a-z0-9]", "", str(label).lower())
+def make_joint_figure(m_uw: pd.DataFrame, m_mad: pd.DataFrame) -> plt.Figure:
+    rows = [("UW", m_uw, True), ("MADRC", m_mad, False)]
 
+    def rel(mm):
+        return (mm["Diff"] / mm["Ref_mm3"] * 100.0).to_numpy()
 
-def is_excluded_label(label: str) -> bool:
-    s = _squash_label(label)
-    return any(pat in s for pat in EXCLUDE_LABEL_PATTERNS)
+    pooled_rel, pooled_x = [], []
+    for _, mm, _ in rows:
+        if not mm.empty:
+            pooled_rel.extend(rel(mm).tolist())
+            pooled_x.extend(np.log10(mm["Ref_mm3"].to_numpy()).tolist())
+    if pooled_rel:
+        lo, hi = np.percentile(pooled_rel, [2, 98]); mrg = (hi - lo) * 0.10
+        y_lo, y_hi = lo - mrg, hi + mrg
+    else:
+        y_lo, y_hi = -50.0, 50.0
+    if pooled_x:
+        x_lo, x_hi = min(pooled_x), max(pooled_x); xm = (x_hi - x_lo) * 0.04
+        x_lo, x_hi = x_lo - xm, x_hi + xm
+    else:
+        x_lo, x_hi = 0.0, 1.0
 
-
-def drop_excluded_labels(df: pd.DataFrame) -> pd.DataFrame:
-    """Remove rows whose (normalized) label matches EXCLUDE_LABEL_PATTERNS."""
-    if df.empty:
-        return df
-    keep = ~df["Label"].map(is_excluded_label)
-    return df[keep].copy()
-
-# =============================================================================
-# LATEX TABLE
-# =============================================================================
-def build_latex(df: pd.DataFrame, ref_vols_by_label: dict) -> str:
-    L = [
-        r"\begin{table*}[h!]",
-        r"\centering",
-        r"\caption{Mean volume measurements (mm$^3$) across segmentation methods and "
-        r"slab distances. Left/right regions are averaged into a single bilateral label. "
-        r"Reference volumes are shown for comparison.}",
-        r"\label{tab:volume_correlations}",
-        r"\begin{tabular}{llrrrr}",
-        r"\toprule",
-        r"\textbf{Label} & \textbf{Distance} & \textbf{Reference} & "
-        r"\textbf{Photo-recon} & \textbf{Tricubic} & \textbf{Imputed} \\",
-        r"\midrule",
-    ]
-    for label in sorted(df["Label"].unique()):
-        ref_vol = ref_vols_by_label.get(label, np.nan)
-        ref_str = f"{ref_vol:.1f}" if not np.isnan(ref_vol) else "--"
-        for distance in DISTANCES:
-            def fmt(method, lbl=label, dist=distance):
-                m = label_mean_volume(df, method, dist, lbl)
-                return f"{m:.1f}" if not np.isnan(m) else "--"
-            L.append(
-                f"{label:20s} & {distance} & {ref_str} & "
-                f"{fmt('Photo-recon')} & {fmt('Tricubic')} & {fmt('Imputed')} \\\\"
-            )
-    L += [r"\bottomrule", r"\end{tabular}", r"\end{table*}"]
-    return "\n".join(L)
-
-# =============================================================================
-# SHARED MERGE / HELPERS FOR THE FIGURES
-# =============================================================================
-def merge_with_ref(df, ref_df):
-    """
-    Merge predictions with per-subject reference volumes and derive:
-        Diff    = V_method - V_ref                (mm^3, signed)
-        MeanVol = (V_method + V_ref) / 2          (mm^3, Bland-Altman x)
-        RelErr  = Diff / V_ref  * 100             (%, vs reference)
-        RelBA   = Diff / MeanVol * 100            (%, Bland-Altman)
-    """
-    ref_long = ref_df.rename(columns={"Volume_mm3": "Ref_mm3"})[
-        ["Subject", "Label", "Ref_mm3"]
-    ]
-    m = df.merge(ref_long, on=["Subject", "Label"], how="inner")
-    m = m[(m["Ref_mm3"] > 0) & (m["Volume_mm3"] > 0)].copy()
-    m["Diff"]    = m["Volume_mm3"] - m["Ref_mm3"]
-    m["MeanVol"] = 0.5 * (m["Volume_mm3"] + m["Ref_mm3"])
-    m["RelErr"]  = m["Diff"] / m["Ref_mm3"] * 100.0
-    m["RelBA"]   = m["Diff"] / m["MeanVol"] * 100.0
-    return m
-
-
-def ordered_labels(m, ref_vols_by_label):
-    """Labels sorted by descending reference volume (largest structures first)."""
-    labels = list(m["Label"].unique())
-    return sorted(labels, key=lambda lab: ref_vols_by_label.get(lab, 0.0),
-                  reverse=True)
-
-
-def _shared_ylim(values, pad_frac=0.10, fallback=(-50.0, 50.0)):
-    """Robust shared y-limits from the 1st-99th percentile, padded."""
-    v = np.asarray(values, dtype=float)
-    v = v[np.isfinite(v)]
-    if v.size == 0:
-        return fallback
-    lo, hi = np.percentile(v, [1, 99])
-    pad = (hi - lo) * pad_frac
-    return lo - pad, hi + pad
-
-
-# =============================================================================
-# FIGURE 1: per-structure boxplots of signed relative error, method-grouped,
-#           one panel per slab distance
-# =============================================================================
-def fig_boxplot_relerr(df, ref_df, ref_vols_by_label):
-    m_all = merge_with_ref(df, ref_df)
-    labels = ordered_labels(m_all, ref_vols_by_label)
-    n_lab = len(labels)
-    y_lo, y_hi = _shared_ylim(m_all["RelErr"].to_numpy())
-
-    w = 0.8 / max(len(METHODS), 1)
-    fig, axes = plt.subplots(
-        1, len(DISTANCES),
-        figsize=(max(14.0, 0.9 * n_lab * len(DISTANCES)), 6.0),
-        sharey=True, squeeze=False,
-    )
-    axes = axes[0]
-
-    for ax, distance in zip(axes, DISTANCES):
-        md = m_all[m_all["Distance"] == distance]
-        for j, method in enumerate(METHODS):
-            offset = (j - (len(METHODS) - 1) / 2.0) * w
-            data, pos = [], []
-            for i, lab in enumerate(labels):
-                arr = md[(md["Method"] == method) &
-                         (md["Label"] == lab)]["RelErr"].to_numpy()
-                arr = arr[np.isfinite(arr)]
-                if arr.size:
-                    data.append(arr)
-                    pos.append(i + offset)
-            if not data:
-                continue
-            bp = ax.boxplot(data, positions=pos, widths=w * 0.9,
-                            patch_artist=True, showfliers=False,
-                            medianprops=dict(color="black", linewidth=1.2))
-            for box in bp["boxes"]:
-                box.set(facecolor=METHOD_COLORS[method], alpha=0.85,
-                        edgecolor="black", linewidth=0.6)
-            for part in ("whiskers", "caps"):
-                for artist in bp[part]:
-                    artist.set(linewidth=0.8)
-
-        ax.axhline(0, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
-        ax.set_xticks(range(n_lab))
-        ax.set_xticklabels(labels, rotation=45, ha="right")
-        ax.set_xlim(-0.6, n_lab - 0.4)
-        ax.set_ylim(y_lo, y_hi)
-        ax.set_title(f"Slab distance: {distance}", fontsize=12, fontweight="bold")
-        ax.grid(True, axis="y", alpha=0.25, linestyle=":")
-
-    axes[0].set_ylabel("Signed relative volume error (%)",
-                       fontsize=12, fontweight="bold")
-    handles = [Patch(facecolor=METHOD_COLORS[m], edgecolor="black", label=m)
-               for m in METHODS]
-    axes[-1].legend(handles=handles, loc="upper right", fontsize=10,
-                    title="Method", title_fontsize=10)
-    fig.suptitle(
-        "Signed relative volume error by structure and method, per slab distance",
-        fontsize=13, y=1.02,
-    )
-    plt.tight_layout()
-    return fig
-
-
-# =============================================================================
-# FIGURE 2: relative Bland-Altman per method
-# =============================================================================
-def fig_bland_altman(df, ref_df):
-    m_all = merge_with_ref(df, ref_df)
-    y_lo, y_hi = _shared_ylim(m_all["RelBA"].to_numpy(), pad_frac=0.15)
-
-    fig, axes = plt.subplots(
-        1, len(METHODS), figsize=(6.0 * len(METHODS), 5.5),
-        sharey=True, sharex=True, squeeze=False,
-    )
-    axes = axes[0]
-
-    for ax, method in zip(axes, METHODS):
-        mm = m_all[m_all["Method"] == method]
-        for distance in DISTANCES:
-            d = mm[mm["Distance"] == distance]
-            if d.empty:
-                continue
-            ax.scatter(np.log10(d["MeanVol"].to_numpy()), d["RelBA"].to_numpy(),
-                       s=16, alpha=0.5,
-                       color=DISTANCE_COLORS.get(distance, "#7f7f7f"),
-                       edgecolors="none", label=distance, zorder=2)
-        for distance in DISTANCES:
-            d = mm[mm["Distance"] == distance]
-            if len(d) < 2:
-                continue
-            bias, sd = d["RelBA"].mean(), d["RelBA"].std()
-            c = DISTANCE_COLORS.get(distance, "#7f7f7f")
-            ax.axhline(bias, color=c, linestyle="-", linewidth=1.3, alpha=0.9, zorder=1)
-            ax.axhline(bias + 1.96 * sd, color=c, linestyle=":", linewidth=1.0, alpha=0.7, zorder=1)
-            ax.axhline(bias - 1.96 * sd, color=c, linestyle=":", linewidth=1.0, alpha=0.7, zorder=1)
-
-        ax.axhline(0, color="black", linestyle="--", linewidth=1.0, alpha=0.5)
-        ax.set_ylim(y_lo, y_hi)
-        ax.set_xlabel("Mean of method and reference [mm^3, log10]",
-                      fontsize=12, fontweight="bold")
-        ax.set_title(method, fontsize=13, fontweight="bold", pad=6)
-        ax.grid(True, alpha=0.25, linestyle=":")
-        ax.legend(fontsize=9, loc="lower right", title="Distance", title_fontsize=9)
-
-    axes[0].set_ylabel("Relative difference (%): (method - reference) / mean",
-                       fontsize=12, fontweight="bold")
-    fig.suptitle(
-        "Relative Bland-Altman agreement per method (bias and 95% LoA per distance)",
-        fontsize=13, y=1.02,
-    )
-    plt.tight_layout()
-    return fig
-
-
-# =============================================================================
-# FIGURE 3: small multiples, error vs structure size (method x distance)
-# =============================================================================
-def fig_small_multiples(df, ref_df):
-    m_all = merge_with_ref(df, ref_df)
-    n_rows, n_cols = len(METHODS), len(DISTANCES)
-    y_lo, y_hi = _shared_ylim(m_all["RelErr"].to_numpy())
-
-    fig, axes = plt.subplots(
-        n_rows, n_cols, figsize=(5.0 * n_cols, 3.8 * n_rows),
-        sharex=True, sharey=True, squeeze=False,
-    )
-    for r, method in enumerate(METHODS):
-        for c, distance in enumerate(DISTANCES):
+    fig, axes = plt.subplots(2, 3, figsize=(18, 9.5), sharey=True, sharex=True)
+    for r, (dlabel, mm, by_dist) in enumerate(rows):
+        for c, method in enumerate(METHODS):
             ax = axes[r][c]
-            d = m_all[(m_all["Method"] == method) & (m_all["Distance"] == distance)]
-            if not d.empty:
-                ax.scatter(np.log10(d["Ref_mm3"].to_numpy()), d["RelErr"].to_numpy(),
-                           s=14, alpha=0.5,
-                           color=DISTANCE_COLORS.get(distance, "#7f7f7f"),
-                           edgecolors="none", zorder=2)
-                ax.axhline(d["RelErr"].mean(), color="black",
-                           linestyle=":", linewidth=1.0, alpha=0.7, zorder=1)
-            ax.axhline(0, color="black", linestyle="--", linewidth=0.9, alpha=0.5)
-            ax.set_ylim(y_lo, y_hi)
-            ax.grid(True, alpha=0.25, linestyle=":")
+            sub = mm[mm["Method"] == method].copy()
+            if not sub.empty:
+                sub["RelErr"] = sub["Diff"] / sub["Ref_mm3"] * 100.0
+                if by_dist:
+                    for dist in DISTANCES:
+                        dd = sub[sub["Distance"] == dist]
+                        if dd.empty:
+                            continue
+                        ax.scatter(np.log10(dd["Ref_mm3"].to_numpy()),
+                                   dd["RelErr"].to_numpy(), s=36, alpha=0.55,
+                                   color=DISTANCE_COLORS.get(dist, "#7f7f7f"),
+                                   edgecolors="none", label=dist, zorder=2)
+                else:
+                    ax.scatter(np.log10(sub["Ref_mm3"].to_numpy()),
+                               sub["RelErr"].to_numpy(), s=36, alpha=0.55,
+                               color=MADRC_COLOR, edgecolors="none", zorder=2)
+                bias, sd = sub["RelErr"].mean(), sub["RelErr"].std()
+                txt = (f"Bias = {bias:+.1f} %\n"
+                       f"LoA  [{bias - 1.96 * sd:+.1f}, {bias + 1.96 * sd:+.1f}] %")
+                ax.text(0.03, 0.97, txt, transform=ax.transAxes, fontsize=20,
+                        verticalalignment="top", family="sans-serif",
+                        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.55))
+
+            ax.axhline(0, color="black", linewidth=1.0, linestyle="--", alpha=0.6, zorder=1)
+            ax.set_ylim(y_lo, y_hi); ax.set_xlim(x_lo, x_hi)
+            ax.grid(True, alpha=0.25, linestyle=":", which="both")
             if r == 0:
-                ax.set_title(distance, fontsize=12, fontweight="bold")
+                ax.set_title(METHOD_DISPLAY[method], fontsize=20, fontweight="bold", pad=6)
             if c == 0:
-                ax.set_ylabel(f"{method}\nrel. error (%)", fontsize=11, fontweight="bold")
-            if r == n_rows - 1:
-                ax.set_xlabel("Ref vol [mm^3, log10]", fontsize=11)
-
-    fig.suptitle(
-        "Signed relative error vs structure size (rows: method, columns: slab distance)",
-        fontsize=13, y=1.01,
-    )
+                ax.set_ylabel(f"{dlabel}\nRelative volume error (%)",
+                              fontsize=20, fontweight="bold")
+            if r == len(rows) - 1:
+                ax.set_xlabel("Reference volume [mm$^3$, log10]",
+                              fontsize=20, fontweight="bold")
+        if by_dist:
+            axes[r][-1].legend(fontsize=20, loc="lower right",
+                               title="Distance", title_fontsize=9)
     plt.tight_layout()
     return fig
-
-
-# =============================================================================
-# FIGURE 4: pooled mean relative error vs slab distance, per method
-# =============================================================================
-def fig_bias_vs_distance(df, ref_df):
-    m_all = merge_with_ref(df, ref_df)
-    x = np.arange(len(DISTANCES), dtype=float)
-    offsets = np.linspace(-0.12, 0.12, len(METHODS)) if len(METHODS) > 1 else [0.0]
-
-    fig, ax = plt.subplots(figsize=(8.0, 6.0))
-    for j, method in enumerate(METHODS):
-        means, cis = [], []
-        for distance in DISTANCES:
-            d = m_all[(m_all["Method"] == method) &
-                      (m_all["Distance"] == distance)]["RelErr"].to_numpy()
-            d = d[np.isfinite(d)]
-            if d.size >= 2:
-                means.append(float(d.mean()))
-                cis.append(1.96 * float(d.std(ddof=1)) / np.sqrt(d.size))
-            else:
-                means.append(np.nan)
-                cis.append(np.nan)
-        ax.errorbar(x + offsets[j], means, yerr=cis, marker="o", capsize=4,
-                    linewidth=1.6, color=METHOD_COLORS[method], label=method)
-
-    ax.axhline(0, color="black", linestyle="--", linewidth=1.0, alpha=0.6)
-    ax.set_xticks(x)
-    ax.set_xticklabels(DISTANCES)
-    ax.set_xlabel("Slab distance", fontsize=12, fontweight="bold")
-    ax.set_ylabel("Mean signed relative error (%), 95% CI of the mean",
-                  fontsize=12, fontweight="bold")
-    ax.set_title("Volume error vs slab distance (pooled across structures)",
-                 fontsize=13, fontweight="bold")
-    ax.grid(True, axis="y", alpha=0.25, linestyle=":")
-    ax.legend(title="Method", title_fontsize=10)
-    plt.tight_layout()
-    return fig
-
-# =============================================================================
-# OUTPUTS
-# =============================================================================
-def save_outputs(df, ref_df, ref_vols_by_label):
-    os.makedirs(OUT_DIR, exist_ok=True)
-    outputs = []
-
-    def _save(fig, stem):
-        svg = os.path.join(OUT_DIR, stem + ".svg")
-        pdf = os.path.join(OUT_DIR, stem + ".pdf")
-        fig.savefig(svg, bbox_inches="tight", dpi=300)
-        fig.savefig(pdf, bbox_inches="tight", dpi=300)
-        plt.close(fig)
-        outputs.extend([pdf, svg])
-
-    _save(make_figure(df, ref_df),                           "volume_correlations_figure")
-    _save(fig_boxplot_relerr(df, ref_df, ref_vols_by_label), "volume_boxplot_relerr")
-    _save(fig_bland_altman(df, ref_df),                      "volume_bland_altman")
-    _save(fig_small_multiples(df, ref_df),                   "volume_smallmultiples")
-    _save(fig_bias_vs_distance(df, ref_df),                  "volume_bias_vs_distance")
-
-    tex = os.path.join(OUT_DIR, "volume_correlations_stats.tex")
-    Path(tex).write_text(build_latex(df, ref_vols_by_label) + "\n", encoding="utf-8")
-    outputs.append(tex)
-
-    audit = write_audit(df, ref_vols_by_label)
-    outputs.append(audit)
-    return outputs
 
 
 # =============================================================================
 # MAIN
 # =============================================================================
 def main():
-    parser = argparse.ArgumentParser(
-        description="Volume correlation analysis: relative error vs. reference volume."
-    )
-    parser.add_argument("--ref-dir",         required=True)
-    parser.add_argument("--photo-recon-dir", required=True)
-    parser.add_argument("--tricubic-dir",    required=True)
-    parser.add_argument("--imputed-dir",     required=True)
-    parser.add_argument("--out-dir",         required=True)
-    args = parser.parse_args()
+    p = argparse.ArgumentParser(description="Joint UW+MADRC volume-correlation outputs.")
+    p.add_argument("--uw-ref-dir",         required=True)
+    p.add_argument("--uw-photo-recon-dir", required=True)
+    p.add_argument("--uw-tricubic-dir",    required=True)
+    p.add_argument("--uw-imputed-dir",     required=True)
+    p.add_argument("--madrc-ref-dir",         required=True)
+    p.add_argument("--madrc-photo-recon-dir", required=True)
+    p.add_argument("--madrc-tricubic-dir",    required=True)
+    p.add_argument("--madrc-imputed-dir",     required=True)
+    p.add_argument("--out-dir",            required=True)
+    args = p.parse_args()
 
-    global REF_DIR, PHOTO_RECON_DIR, TRICUBIC_DIR, IMPUTED_DIR, OUT_DIR
-    REF_DIR          = args.ref_dir
-    PHOTO_RECON_DIR  = args.photo_recon_dir
-    TRICUBIC_DIR     = args.tricubic_dir
-    IMPUTED_DIR      = args.imputed_dir
-    OUT_DIR          = args.out_dir
+    global OUT_DIR
+    OUT_DIR = args.out_dir
+    os.makedirs(OUT_DIR, exist_ok=True)
 
-    print("[Loading data...]")
-    df, ref_df = load_all_subjects()
+    print("[Loading UW...]")
+    uw_df, uw_ref = load_uw_subjects(ref_dir=args.uw_ref_dir, photo_dir=args.uw_photo_recon_dir,
+                                     tri_dir=args.uw_tricubic_dir, imp_dir=args.uw_imputed_dir)
+    m_uw = process(uw_df, uw_ref, "UW")
 
-    print("[Combining left/right hemispheres...]")
-    df     = combine_hemispheres(df)
-    ref_df = combine_reference_hemispheres(ref_df)
-    print("[Excluding extra labels...]")
-    df     = drop_excluded_labels(df)
-    ref_df = drop_excluded_labels(ref_df)
-    ref_vols_by_label = ref_df.groupby("Label")["Volume_mm3"].mean().to_dict()
+    print("[Loading MADRC...]")
+    mad_df, mad_ref = load_madrc_subjects(ref_dir=args.madrc_ref_dir, photo_dir=args.madrc_photo_recon_dir,
+                                          tri_dir=args.madrc_tricubic_dir, imp_dir=args.madrc_imputed_dir)
+    m_mad = process(mad_df, mad_ref, "MADRC")
 
-    print(f"  Prediction rows : {len(df):,}")
-    print(f"  Reference rows  : {len(ref_df):,}")
-    print(f"  Subjects        : {df['Subject'].nunique()}")
-    print(f"  Methods         : {sorted(df['Method'].unique())}")
-    print(f"  Distances       : {sorted(df['Distance'].unique())}")
-    print(f"  Bilateral labels: {df['Label'].nunique()}")
+    if SEG_FAILURE_RATIO > 0.0:
+        m_uw  = drop_segmentation_failures(m_uw)
+        m_mad = drop_segmentation_failures(m_mad)
 
-    print("[Generating outputs...]")
-    outputs = save_outputs(df, ref_df, ref_vols_by_label)
+    m_all = pd.concat([m_uw, m_mad], ignore_index=True)
+    agg = aggregate(m_all)
+    labels = ordered_labels(agg)
+    # print(f"  Sections : {[s for s in SECTION_ORDER if s in set(agg['Distance'])]}")
+    print(f"  Regions  : {labels}")
+
+    outputs = []
+    outputs += build_summary_outputs(m_all, OUT_DIR)
+
+    fig = make_joint_figure(m_uw, m_mad)
+    svg = os.path.join(OUT_DIR, "task_2.1_uwmadrc_volume_correlations.svg")
+    pdf = os.path.join(OUT_DIR, "task_2.1_uwmadrc_volume_correlations.pdf")
+    fig.savefig(svg, bbox_inches="tight", dpi=300)
+    fig.savefig(pdf, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+
+    outputs += [pdf, svg]
+    figc = make_concordance_figure(m_uw, m_mad)
+    svg_c = os.path.join(OUT_DIR, "task_2.1_uwmadrc_volume_concordance.svg")
+    pdf_c = os.path.join(OUT_DIR, "task_2.1_uwmadrc_volume_concordance.pdf")
+    figc.savefig(svg_c, bbox_inches="tight", dpi=300)
+    figc.savefig(pdf_c, bbox_inches="tight", dpi=300)
+    plt.close(figc)
+    outputs += [pdf_c, svg_c]
+
+    tex_err = os.path.join(OUT_DIR, "volume_error_table_joint.tex")
+    Path(tex_err).write_text(build_error_latex(agg, labels) + "\n", encoding="utf-8")
+    outputs.append(tex_err)
+
+    tex_p = os.path.join(OUT_DIR, "volume_pvalue_table_joint.tex")
+    Path(tex_p).write_text(build_pvalue_latex(m_all, labels) + "\n", encoding="utf-8")
+    outputs.append(tex_p)
+
+    outputs.append(write_joint_csv(agg, m_all, labels))
+
     print("Wrote:")
     for f in outputs:
         print(f"  {f}")

@@ -66,7 +66,7 @@ PAIRS = [("Photo-recon", "Tricubic"),
 # When True, the pairwise table prints the raw p-value and keys its significance
 # stars to the corrected q-value. Set False to star the raw p (no correction);
 # the caption text switches accordingly.
-APPLY_BH = True
+APPLY_BH = False
 
 # -----------------------------------------------------------------------------
 REFERENCE = "Photo-recon"
@@ -136,6 +136,7 @@ def load_uw(records: list) -> None:
     """UW cohort: three parallel subfolders sharing case-folder names."""
     sub_method = {
         "05_photo_recon_atlas_registration": "Photo-recon",
+        # "05_bicubic_atlas_registration": "Tricubic",
         "05_bicubic_atlas_registration_resamplingfirst": "Tricubic",
         "05_unet_atlas_registration": "Imputed",
     }
@@ -347,7 +348,7 @@ def build_pairwise_latex(df: pd.DataFrame) -> str:
         p = pmap[(cond, region, pair)]
         if p is None or (isinstance(p, float) and np.isnan(p)):
             return "--"
-        return ("%.3f" % p) 
+        return (r"$< 0.0001$") if p < 1e-4 else (r"%.3f" % p)
 
     if APPLY_BH:
         sig = (r"superscripts denote significance after Benjamini-Hochberg "
@@ -447,7 +448,7 @@ def make_figure(df: pd.DataFrame) -> plt.Figure:
                 whiskerprops=dict(linewidth=1), capprops=dict(linewidth=1),
                 medianprops=dict(linewidth=1.3), dodge=True, showfliers=False,
                 width=width, ax=ax)
-    # ax.set_ylabel("Synthseg", fontsize=22)
+    # ax.set_ylabel("Dice", fontsize=20)
     ax.set_xlabel("")
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=20)
     ax.tick_params(axis="y", labelsize=20)

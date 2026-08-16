@@ -11,14 +11,14 @@ from ext.photo_imputation_utils import MRIread, eugenios_closest_canonical
 
 # --- CONFIGURATION ---
 # Define your list of subject IDs here
-# BASE_IMPUTE_DIR = '/home/marina/ms_thesis/photo_recon_uw/03_bicubic_interpolations'
-BASE_IMPUTE_DIR = '/home/marina/ms_thesis/photo_recon_uw/02_imputations_unet'
+BASE_IMPUTE_DIR = '/home/marina/ms_thesis/photo_recon_uw/03_bicubic_interpolations'
+# BASE_IMPUTE_DIR = '/home/marina/ms_thesis/photo_recon_uw/02_imputations_unet'
 SUBJECT_IDS = os.listdir(BASE_IMPUTE_DIR)
 
 # Base directories to construct paths dynamically
 BASE_REF_DIR = '/home/marina/ms_thesis/photo_recon_uw/00_photo_recon'
 
-output_dir = '/home/marina/ms_thesis/evaluation_results/imputations2'
+output_dir = '/home/marina/ms_thesis/evaluation_results/imputations_cubic'
 os.makedirs(output_dir, exist_ok=True)
 
 # Plotting control
@@ -42,7 +42,7 @@ def evaluate_slice(orig_slice, imput_slice, slice_idx, condition_name, subject_i
     if psnr_val == float('inf'):
         if mae_val == 0:
             print(f"Warning: PSNR is infinite for {subject_id} | {condition_name} | Slice {slice_idx}. Images are identical.")
-            psnr_val = 100.0  # Assign a high PSNR value for identical images
+            psnr_val = 50.0  # Assign a high PSNR value for identical images
 
     # Handle multi-channel SSIM safely
     num_channels = img_test.shape[-1] if img_test.ndim > 2 else 1
@@ -85,10 +85,10 @@ def evaluate_slice(orig_slice, imput_slice, slice_idx, condition_name, subject_i
         plt.close()
 
 def main():
-    # name_8mm = 'photo_recon_8mm_tricubic.nii.gz'
-    # name_12mm = 'photo_recon_12mm_tricubic.nii.gz'
-    name_8mm = 'imputed_unet_8mm.nii.gz'
-    name_12mm = 'imputed_unet_12mm.nii.gz'
+    name_8mm = 'photo_recon_8mm_tricubic.nii.gz'
+    name_12mm = 'photo_recon_12mm_tricubic.nii.gz'
+    # name_8mm = 'imputed_unet_8mm.nii.gz'
+    # name_12mm = 'imputed_unet_12mm.nii.gz'
 
     # --- MAIN RUNNER LOOP ---
     for subject_id in SUBJECT_IDS:
@@ -134,8 +134,8 @@ def main():
 
         # --- 8mm Imputation Evaluation ---
         for i in range(1, I_origs[1].shape[1]):
-            j = int(np.ceil(affs_orig[1]*i))
             idx = 2*i - 1
+            j = int(np.floor(affs_orig[0]*idx - affs_orig[0]/2))
             
             if idx >= I_origs[0].shape[1] or j >= vol8.shape[1]:
                 continue
@@ -146,9 +146,19 @@ def main():
 
         # --- 12mm Imputation Evaluation ---
         for i in range(1, I_origs[2].shape[1]):
-            j = int(np.ceil(affs_orig[2]*i))
             idx = 3*i  # NOTE: 3*i targets kept slices. Use 3*i-1 or 3*i-2 for missing slices.
-            
+            j = int(np.floor(affs_orig[0]*idx - affs_orig[0]/2))
+
+            if idx >= I_origs[0].shape[1] or j >= vol12.shape[1]:
+                continue
+
+            orig_slice = I_origs[0][:, idx]
+            imput_slice = vol12[:, j] 
+            evaluate_slice(orig_slice, imput_slice, idx, '12mm', subject_id, data_range)
+
+            idx = 3*i+1  # NOTE: 3*i targets kept slices. Use 3*i-1 or 3*i-2 for missing slices.
+            j = int(np.floor(affs_orig[0]*idx - affs_orig[0]/2))
+
             if idx >= I_origs[0].shape[1] or j >= vol12.shape[1]:
                 continue
 
