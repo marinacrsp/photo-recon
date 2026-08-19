@@ -249,15 +249,19 @@ def process(df: pd.DataFrame, ref_df: pd.DataFrame, tag: str) -> pd.DataFrame:
         raise RuntimeError(f"{tag}: no (Subject, SegId) pair matched the reference.")
     qc_report(m, tag)
 
-    m = restrict_complete_cases(m, COMPLETE_CASE_SCOPE)  # optional
-    m = collapse_hemispheres(m)                          # step 3
-
-    if VERBOSE_QC:
-        n_bilat = int((m["n_hemi"] == 2).sum())
-        print(f"[{tag}] final: {len(m)} region observations, "
-              f"{m['Subject'].nunique()} specimen(s), "
-              f"{m['Label'].nunique()} region(s); "
-              f"{n_bilat} bilateral / {len(m) - n_bilat} unilateral.")
+    # m = restrict_complete_cases(m, COMPLETE_CASE_SCOPE)  # optional
+    # m = collapse_hemispheres(m)   
+    keys = ['Subject', 'Region', 'Distance', 'Method']
+    m = (m.groupby(keys, as_index=False)
+               .agg(Volume_mm3=("Volume_mm3", "mean"),
+                    Ref_mm3=("Ref_mm3", "mean"),
+                    Diff=("Diff_hemi", "mean"),
+                    AbsErr=("AbsErr_hemi", "mean"),
+                    RelErr=("RelErr_hemi", "mean"),
+                    AbsErr_rel=("AbsErr_rel_hemi", "mean"),
+                    n_hemi=("Hemi", "nunique"),
+                    Hemis=("Hemi", lambda s: "".join(sorted(set(s))))))
+    m["Label"] = m["Region"]  
     return m
 
 

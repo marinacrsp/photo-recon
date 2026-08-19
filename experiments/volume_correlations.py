@@ -43,7 +43,7 @@ import glob
 import argparse
 import itertools
 from pathlib import Path
-from experiments.utils.summary_tables import build_summary_outputs
+from utils.summary_tables import build_summary_outputs
 
 import numpy as np
 import pandas as pd
@@ -52,7 +52,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.stats import wilcoxon
 from scipy.stats import linregress
-from experiments.utils.combine_hemispheres import process #as process_madrc
+from utils.combine_hemispheres import process #as process_madrc
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
@@ -624,11 +624,7 @@ def collect_pvalue_family(m, labels):
     return present, keys, dict(zip(keys, raw)), dict(zip(keys, q)), m_valid
 
 def aggregate(m: pd.DataFrame) -> pd.DataFrame:
-    return (m.groupby(["Label", "Method", "Distance"])
-              .agg(norm_err_mean=("RelErr", "mean"),
-                   norm_err_std=("RelErr", "std"),
-                   n=("Subject", "nunique"))
-              .reset_index())
+    return 
 
 
 def pvalue(m: pd.DataFrame, distance: str, label: str,
@@ -872,13 +868,12 @@ def main():
     mad_df, mad_ref = load_madrc_subjects(ref_dir=args.madrc_ref_dir, photo_dir=args.madrc_photo_recon_dir,
                                           tri_dir=args.madrc_tricubic_dir, imp_dir=args.madrc_imputed_dir)
     m_mad = process(mad_df, mad_ref, "MADRC")
-
-    if SEG_FAILURE_RATIO > 0.0:
-        m_uw  = drop_segmentation_failures(m_uw)
-        m_mad = drop_segmentation_failures(m_mad)
-
     m_all = pd.concat([m_uw, m_mad], ignore_index=True)
-    agg = aggregate(m_all)
+    agg = (m_all.groupby(["Label", "Method", "Distance"])
+              .agg(norm_err_mean=("AbsErr_rel", "mean"),
+                   norm_err_std=("AbsErr_rel", "std"),
+                   n=("Subject", "nunique"))
+              .reset_index())
     labels = ordered_labels(agg)
     # print(f"  Sections : {[s for s in SECTION_ORDER if s in set(agg['Distance'])]}")
     print(f"  Regions  : {labels}")
