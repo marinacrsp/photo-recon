@@ -452,7 +452,7 @@ def make_figure(df: pd.DataFrame) -> plt.Figure:
     hue_order = [f"{m} | {c}" for c in CONDITIONS for m in METHODS
                  if f"{m} | {c}" in present]
     n = len(hue_order)
-    width = 0.65
+    width = 0.8
 
     fig, ax = plt.subplots(figsize=(18, 8))
     sns.boxplot(data=df, x="Region", y="Dice", order=FIGURE_REGION_ORDER,

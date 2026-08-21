@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "../.."
+		},
+		{
+			"path": "../../../photo_recon_madrc"
+		},
+		{
+			"path": "../../../evaluation_results"
+		},
+		{
+			"path": "../../../photo_recon_uw"
+		}
+	],
+	"settings": {}
+}

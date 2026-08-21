@@ -17,35 +17,42 @@ The files currently available on the remote main branch are:
 ```text
 .
 ├── bash_scripts/
-│   ├── madrc_run_downstream_batch.sh
-│   ├── madrc_run_downstream_registration.sh
-│   ├── run_imputation.sh
-│   └── run_imputation_madrc.sh
-├── environment.yml
+│   ├── run_imputation.sh                    # batch inference wrapper, UW subject tree
+│   ├── run_imputation_madrc.sh              # batch inference wrapper, MADRC subject tree
+│   └── run_single_case_downstream.sh        # worked example: segmentation, overlap,
+│                                            #   statistics, atlas registration and
+│                                            #   label propagation for ONE volume
+├── environment.yml                          # Conda environment (alternative to pip)
 ├── experiments/
-│   ├── consistency_experiment.py
-│   ├── task_atlas_registration.py
-│   ├── task_consistency.py
-│   ├── task_surface_reconstruction.py
-│   ├── task_synthseg_segmentation.py
-│   ├── task_synthseg_segmentation_photosynthseg.py
-│   ├── task_volume_segmentation.py
-│   ├── volume_correlations.py
-│   └── volume_correlations_madrc.py
+│   ├── utils/
+│   │   ├── combine_hemispheres.py           # SegId allowlist, left/right collapsing,
+│   │   │                                    #   merge with the reference volumes
+│   │   └── summary_tables.py                # shared summary tables for the volume task
+│   ├── make_videos.py                       # slice-sweep videos of reconstructions
+│   ├── run_all_tasks.sh                     # driver: runs the five evaluation tasks
+│   ├── surface_error_map.py                 # per-vertex surface error maps (figures)
+│   ├── task_atlas_registration.py           # task 3: Dice of warped atlas labels
+│   ├── task_consistency.py                  # task 5: slice-wise MAE / PSNR / SSIM
+│   ├── task_surface_reconstruction.py       # task 1: pial, white and thickness errors
+│   ├── task_synthseg_segmentation.py        # task 2: Dice of SynthSeg segmentations
+│   ├── volume_correlations.py               # task 4: per-region volume error and
+│   │                                        #   concordance against MRI volumes
+│   └── volume_correlations_deformed.py      # task 4 variant, deformed reference
 ├── ext/
-│   ├── evaluation/
-│   ├── unet3d/
-│   ├── logger.py
-│   ├── machine_learning_utils.py
-│   ├── photo_imputation_utils.py
-│   ├── photo_utils.py
-│   ├── utils.py
+│   ├── evaluation/                          # evaluation helpers used by experiments/
+│   ├── unet3d/                              # U-Net building blocks
+│   ├── logger.py                            # training and inference logging
+│   ├── machine_learning_utils.py            # model construction, checkpoint handling
+│   ├── photo_imputation_utils.py            # MRIread, canonical reorientation,
+│   │                                        #   resampling used by imputation code
+│   ├── photo_utils.py                       # dissection-photo specific helpers
+│   ├── utils.py                             # general numerical and I/O utilities
 │   └── __init__.py
-├── generators.py
-├── make_videos.py
-├── requirements.txt
-├── sample_machine_learning.py
-├── train.py
+├── generators.py                            # synthetic training-sample generator
+├── make_videos.py                           # video generation, repository-root entry
+├── requirements.txt                         # non-PyTorch Python dependencies
+├── sample_machine_learning.py               # inference: model, tricubic and trilinear
+├── train.py                                 # training entry point for the 2D U-Net
 └── README.md
 ```
 

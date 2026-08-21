@@ -43,9 +43,8 @@ import glob
 import argparse
 import itertools
 from pathlib import Path
-from utils.summary_tables import build_summary_outputs
-from utils.build_figures import concordance_outputs
-
+from utils.summary_tables import build_summary_outputs 
+from utils.build_figures import concordance_outputs, compute_pearson_table 
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -55,13 +54,15 @@ from scipy.stats import wilcoxon
 from scipy.stats import linregress
 from utils.combine_hemispheres import process #as process_madrc
 from utils.build_volume_errors import compute_volume_metrics, write_volume_tables
+from utils.build_concordance import write_normalised_concordance
+from utils.figures_main import write_region_group_figures
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 OUT_DIR = None
 
 Q_LEVEL=0.05
-ADD_SDV = False
+
 METHODS = ["Photo-recon", "Tricubic", "Imputed"]
 METHOD_DISPLAY = {
     "Photo-recon": "3D reconstruction \n of slab photographs",
@@ -71,7 +72,8 @@ METHOD_DISPLAY = {
 METHOD_ABBR = {"Photo-recon": "PR", "Tricubic": "Cubic", "Imputed": "UNet"}
 
 DISTANCES   = ["12mm", "8mm", "4mm"]          # UW slab distances
-
+CELL_STYLE = "pm"
+CELL_PREC = 3 
 MADRC_LABEL = "MADRC"                          # Distance tag for the MADRC cohort
 SECTION_ORDER = [MADRC_LABEL] + DISTANCES      # table section order (MADRC first)
 SECTION_ORDER_TABLE = [MADRC_LABEL] + ["4mm", "8mm", "12mm"] 
@@ -118,8 +120,7 @@ ERROR_CAPTION = (
     r"reconstructions of photographs, for the MADRC and UW datasets."
     r"Gold-standard volumes are obtained from MRI scans."
 )
-CELL_STYLE = "pm"
-CELL_PREC = 3 
+
 PVALUE_CAPTION = (
     r"Pairwise statistical comparisons of the per-subject absolute volume errors "
     r"between reconstruction methods, for the MADRC and UW datasets, by region and "
@@ -206,7 +207,7 @@ def load_madrc_subjects(ref_dir, photo_dir, tri_dir, imp_dir) -> tuple:
     print(f"[MADRC] Found {len(subjects)} subject(s)")
 
     for subject in subjects:
-        ref_file = _first_glob(os.path.join(ref_dir, subject, "*", "seg_stats.txt"))
+        ref_file = _first_glob(os.path.join(ref_dir, subject, "*", "mri_seg_stats.txt"))
         if ref_file is None:
             print(f"[MADRC] [ref] no seg_stats.txt for {subject}, skipping")
             continue
@@ -224,11 +225,11 @@ def load_madrc_subjects(ref_dir, photo_dir, tri_dir, imp_dir) -> tuple:
             if not os.path.isdir(spath):
                 continue
             if method == "Tricubic":
-                pattern = os.path.join(spath, "seg_stats_reconany.txt")
+                pattern = os.path.join(spath, "seg_stats_reconany_presurf.txt")
             elif method == "Imputed":
-                pattern = os.path.join(spath, "seg_stats_imputation_reconany.txt")
+                pattern = os.path.join(spath, "seg_stats_imputation_reconany_presurf.txt")
             else:  # Photo-recon
-                pattern = os.path.join(spath, "seg_stats_photo_reconany.txt")
+                pattern = os.path.join(spath, "seg_stats_photo_reconany_presurf.txt")
             sf = _first_glob(pattern)
             if sf is None:
                 print(f"[MADRC] [{method}] no stats for {subject}, skipping")
@@ -302,6 +303,16 @@ def merge_with_ref(df: pd.DataFrame, ref_df: pd.DataFrame) -> pd.DataFrame:
     m = m[(m["Ref_mm3"] > 0) & (m["Volume_mm3"] > 0)].copy()
     m["Diff"] = m["Volume_mm3"] - m["Ref_mm3"]
     return m
+
+
+# def process(df: pd.DataFrame, ref_df: pd.DataFrame, tag: str) -> pd.DataFrame:
+#     df = apply_label_whitelist(df)
+#     ref_df = apply_label_whitelist(ref_df)
+#     if df.empty or ref_df.empty:
+#         raise RuntimeError(f"All {tag} rows removed by the SegId allowlist.")
+#     df = combine_hemispheres(df)
+#     ref_df = combine_reference_hemispheres(ref_df)
+#     return merge_with_ref(df, ref_df)
 
 def _pearson(x, y):
     """Pearson correlation coefficient."""
@@ -450,7 +461,7 @@ def make_concordance_figure(m_uw: pd.DataFrame, m_mad: pd.DataFrame) -> plt.Figu
                             #     f"{dist}: r = {r_val:.2f}, "
                             #     f"SD$_r$ = {rsd:.2f}",
                             #     transform=ax.transAxes,
-                            #     fontsize=16,
+                            #     fontsize=20,
                             #     va="top",
                             #     color= "#333333"
                             # )
@@ -515,7 +526,7 @@ def make_concordance_figure(m_uw: pd.DataFrame, m_mad: pd.DataFrame) -> plt.Figu
                         #     0.95 - 0.06 * DISTANCES.index(dist),
                         #     f"r = {r_val:.2f}, SD$_r$ = {rsd:.2f}",
                         #     transform=ax.transAxes,
-                        #     fontsize=16,
+                        #     fontsize=20,
                         #     va="top"
                         # )
 
@@ -562,7 +573,7 @@ def make_concordance_figure(m_uw: pd.DataFrame, m_mad: pd.DataFrame) -> plt.Figu
     axes[0, -1].legend(
         ordered_handles,
         ordered_labels,
-        fontsize=17,
+        fontsize=20,
         loc="lower right",
         title_fontsize=17,
         handlelength=1.2,
@@ -617,7 +628,11 @@ def collect_pvalue_family(m, labels):
     return present, keys, dict(zip(keys, raw)), dict(zip(keys, q)), m_valid
 
 def aggregate(m: pd.DataFrame) -> pd.DataFrame:
-    return 
+    return (m.groupby(["Label", "Method", "Distance"])
+              .agg(norm_err_mean=("AbsErr_rel", "mean"),
+                   norm_err_std=("AbsErr_rel", "std"),
+                   n=("Subject", "nunique"))
+              .reset_index())
 
 
 def pvalue(m: pd.DataFrame, distance: str, label: str,
@@ -668,7 +683,6 @@ JOINT_CAPTION = (
     r"from MRI scans."
 )
 
-
 def _fmt_mean_sd(mean: float, sd: float, prec: int = CELL_PREC,
                  style: str = CELL_STYLE) -> str:
     """One table cell. Returns '--' when the mean is absent, and the mean alone
@@ -676,7 +690,7 @@ def _fmt_mean_sd(mean: float, sd: float, prec: int = CELL_PREC,
     if mean is None or (isinstance(mean, float) and np.isnan(mean)):
         return "--"
     m = f"{mean:.{prec}f}"
-    if not ADD_SDV or (sd is None) or (isinstance(sd, float) and np.isnan(sd)):
+    if sd is None or (isinstance(sd, float) and np.isnan(sd)):
         return m
     s = f"{sd:.{prec}f}"
     return rf"{m} $\pm$ {s}" if style == "pm" else rf"{m} ({s})"
@@ -890,7 +904,8 @@ def main():
 
     outputs = []
     outputs += build_summary_outputs(m_all, OUT_DIR)
-    outputs += concordance_outputs(m_uw, m_mad, m_all, labels, OUT_DIR)
+    
+
     metrics = compute_volume_metrics(m_all, labels)
     outputs += write_volume_tables(m_all, labels, OUT_DIR, df=metrics)
     
@@ -902,7 +917,12 @@ def main():
     plt.close(fig)
 
     outputs += [pdf, svg]
-    figc = make_concordance_figure(m_uw, m_mad)
+
+    pearson_df = compute_pearson_table(m_all, labels)
+    outputs += write_normalised_concordance(m_uw, m_mad, OUT_DIR, labels, pearson_df=pearson_df)
+    figc = make_concordance_figure(m_uw, m_mad, )
+    outputs += write_region_group_figures(m_uw, m_mad, OUT_DIR,
+                                            pearson_df=pearson_df)
     svg_c = os.path.join(OUT_DIR, "task_2.1_uwmadrc_volume_concordance.svg")
     pdf_c = os.path.join(OUT_DIR, "task_2.1_uwmadrc_volume_concordance.pdf")
     figc.savefig(svg_c, bbox_inches="tight", dpi=300)
@@ -919,11 +939,10 @@ def main():
     outputs.append(tex_p)
 
     outputs.append(write_joint_csv(agg, m_all, labels))
-
+    
     print("Wrote:")
     for f in outputs:
         print(f"  {f}")
-
 
 if __name__ == "__main__":
     main()

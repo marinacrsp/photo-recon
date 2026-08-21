@@ -10,25 +10,29 @@
 #   volumes        volume_correlations.py           -> task_4_volume_correlation_reconany
 #   consistency    task_consistency.py              -> task_5_consistency
 #
+# Location: experiments/run_all_tasks.sh. CODE_ROOT and EXP_DIR are derived from
+# this file's own path, so the driver can be invoked from any working directory.
+#
 # Usage:
-#   ./run_all_tasks.sh                          # run every task
-#   ./run_all_tasks.sh volumes consistency      # run a subset, in the given order
-#   ./run_all_tasks.sh --dry-run                # print the commands only
-#   ./run_all_tasks.sh --recompute-surface      # force stage-1 surface recomputation
-#   ./run_all_tasks.sh --keep-going             # do not abort on the first failure
-#   ./run_all_tasks.sh --push --overleaf-repo /path/to/repo
+#   ./experiments/run_all_tasks.sh                     # run every task
+#   ./experiments/run_all_tasks.sh volumes consistency # subset, in the given order
+#   ./experiments/run_all_tasks.sh --dry-run           # print the commands only
+#   ./experiments/run_all_tasks.sh --recompute-surface # force stage-1 recomputation
+#   ./experiments/run_all_tasks.sh --keep-going        # do not abort on first failure
+#   ./experiments/run_all_tasks.sh --push --overleaf-repo /path/to/repo
 #
 # Every configuration variable can also be overridden from the environment, e.g.
-#   RESULTS_ROOT=/tmp/eval ./run_all_tasks.sh volumes
+#   RESULTS_ROOT=/tmp/eval ./experiments/run_all_tasks.sh volumes
 #
 set -Eeuo pipefail
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
+SELF_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PYTHON="${PYTHON:-/home/marina/envs/photo-imputation/bin/python3.11}"
-CODE_ROOT="${CODE_ROOT:-/home/marina/ms_thesis/imputation_unet_2026_code}"
-EXP_DIR="${EXP_DIR:-$CODE_ROOT/experiments}"
+EXP_DIR="${EXP_DIR:-$SELF_DIR}"                    # experiments/ (this script lives here)
+CODE_ROOT="${CODE_ROOT:-$(dirname -- "$EXP_DIR")}" # repository root (parent of experiments/)
 
 UW_DIR="${UW_DIR:-/home/marina/ms_thesis/photo_recon_uw}"
 MADRC_DIR="${MADRC_DIR:-/home/marina/ms_thesis/photo_recon_madrc}"
@@ -81,7 +85,7 @@ PUSH=0
 SELECTED=()
 
 usage() {
-  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR > 1 { if ($0 ~ /^set -/) exit; sub(/^# ?/, ""); print }' "$0"
   exit "${1:-0}"
 }
 
@@ -148,11 +152,12 @@ preflight() {
 
   mkdir -p "$LOG_DIR" "$RESULTS_ROOT"
 
-  # volume_correlations.py imports utils.summary_tables / utils.combine_hemispheres,
-  # and task_consistency.py imports ext.photo_imputation_utils: both resolve
-  # relative to the repository root, so run from there and export PYTHONPATH.
+  # Import roots differ per module: ext.photo_imputation_utils resolves from the
+  # repository root, while utils.summary_tables / utils.combine_hemispheres live
+  # in experiments/utils. Python also prepends each script's own directory to
+  # sys.path, but both roots are exported so the imports do not rely on that.
   cd "$CODE_ROOT"
-  export PYTHONPATH="$CODE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+  export PYTHONPATH="$CODE_ROOT:$EXP_DIR${PYTHONPATH:+:$PYTHONPATH}"
   export MPLBACKEND="${MPLBACKEND:-Agg}"
 
   cat <<EOF
@@ -160,6 +165,7 @@ preflight() {
  Pipeline run ${STAMP}
    python        : $PYTHON
    code root     : $CODE_ROOT
+   experiments   : $EXP_DIR
    UW dir        : $UW_DIR
    MADRC dir     : $MADRC_DIR
    results root  : $RESULTS_ROOT
